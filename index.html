@@ -1,0 +1,53 @@
+<!doctype html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>Mathnasium Scheduler</title>
+    <link rel="stylesheet" href="src/styles.css" />
+  </head>
+  <body>
+    <main>
+      <h1>Mathnasium Staff Scheduler</h1>
+
+      <div class="card no-print">
+        <h2>1. Upload Binder Locations</h2>
+        <label for="binders">Student binder spreadsheet</label>
+        <input type="file" id="binders" accept=".xlsx,.csv" />
+        <p id="binderStatus" role="status">No file selected</p>
+        <label id="binderSheetLabel" for="binderSheet" hidden>Binder sheet</label>
+        <select id="binderSheet" hidden></select>
+      </div>
+
+      <div class="card no-print">
+        <h2>2. Upload Staff Schedule</h2>
+        <label for="schedule">Staff schedule spreadsheet</label>
+        <input type="file" id="schedule" accept=".xlsx,.csv" />
+        <p id="scheduleStatus" role="status">No file selected</p>
+        <label id="scheduleSheetLabel" for="scheduleSheet" hidden>Schedule sheet / day</label>
+        <select id="scheduleSheet" hidden></select>
+        <div class="actions">
+          <button type="button" id="generate" class="primary">Generate staff lists</button>
+        </div>
+        <p id="importStatus" class="notice" role="status"></p>
+      </div>
+      <div id="results" class="card" hidden>
+        <h2>Staff schedules</h2>
+        <p id="resultSummary"></p>
+        <div id="staffLists"></div>
+        <details id="warnings" hidden>
+          <summary id="warningSummary"></summary>
+          <ul id="warningList" class="notice"></ul>
+        </details>
+        <div class="actions no-print">
+          <button type="button" id="print">Print / save PDF</button>
+          <button type="button" id="export">Download results CSV</button>
+        </div>
+      </div>
+    </main>
+
+    <script src="src/spreadsheet-jobs.js"></script>
+    <script src="src/spreadsheet.js"></script>
+    <script src="src/scheduler.js"></script>
+  </body>
+</html>

@@ -1,0 +1,22 @@
+# Student workbooks and generated exports must stay local.
+*.xlsx
+*.xls
+*.xlsm
+*.xlsb
+*.csv
+*.pdf
+.local-qa/
+.browser-qa/
+
+# Credentials and local tools.
+.env
+.env.*
+!.env.example
+*.pem
+*.key
+.wrangler/
+node_modules/
+dist/
+*.log
+.DS_Store
+Thumbs.db
