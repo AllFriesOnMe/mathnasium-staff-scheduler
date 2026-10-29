@@ -74,31 +74,43 @@ async function generate() {
     };
     let parsed = await SpreadsheetJobs.run(task, { signal: controller.signal });
     if (controller.signal.aborted) return;
-    if ($('aiEnabled').checked && parsed.unresolvedHandoffs?.length) {
-      $('aiStatus').textContent = 'Checking unresolved handoffs with AI...';
+    if ($('aiEnabled').checked) {
+      let requested = false;
+      const messages = [];
       try {
-        const resolutions = await AiFallback.resolve(
-          parsed.unresolvedHandoffs,
-          $('aiAccessCode').value,
-          controller.signal,
-        );
-        if (controller.signal.aborted) return;
-        if (resolutions.length) {
-          const checked = await SpreadsheetJobs.run(
-            { ...task, options: { ...task.options, handoffResolutions: resolutions } },
-            { signal: controller.signal },
+        // Correct uncertain colors first, then rebuild handoff evidence and IDs.
+        for (const [field, option, label] of [
+          ['unresolvedColors', 'colorResolutions', 'uncertain colors'],
+          ['unresolvedHandoffs', 'handoffResolutions', 'unresolved handoffs'],
+        ]) {
+          const cases = parsed[field];
+          if (!cases?.length) continue;
+          requested = true;
+          $('aiStatus').textContent = 'Checking ' + label + ' with AI...';
+          const resolutions = await AiFallback.resolve(
+            cases,
+            $('aiAccessCode').value,
+            controller.signal,
           );
-          parsed = checked;
+          if (controller.signal.aborted) return;
+          if (resolutions.length) {
+            task.options = { ...task.options, [option]: resolutions };
+            parsed = await SpreadsheetJobs.run(task, { signal: controller.signal });
+            if (controller.signal.aborted) return;
+          }
         }
-        $('aiStatus').textContent = parsed.aiApplied?.length
-          ? parsed.aiApplied.join(' ')
-          : 'AI could not resolve any additional handoffs confidently. See import warnings.';
+        if (!requested)
+          messages.push('No eligible unresolved handoffs or colors; no AI request was sent.');
+        else if (!parsed.aiApplied?.length)
+          messages.push(
+            'AI could not resolve any additional assignments confidently. See import warnings.',
+          );
       } catch (error) {
         if (controller.signal.aborted) return;
-        $('aiStatus').textContent = `AI check unavailable: ${error.message}`;
+        messages.push('AI check unavailable: ' + error.message);
       }
-    } else if ($('aiEnabled').checked)
-      $('aiStatus').textContent = 'No unresolved handoffs; no AI request was sent.';
+      $('aiStatus').textContent = [...(parsed.aiApplied || []), ...messages].join(' ');
+    }
     if (controller.signal.aborted) return;
     const rows = parsed.rows,
       warnings = [...parsed.warnings];

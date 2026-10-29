@@ -18,8 +18,20 @@ body {
   gap: 10px;
   margin: 10px 0;
 }
-.color-label {
-  width: 165px;
+.custom-indicator {
+  padding: 12px 0;
+  border-top: 1px solid #ddd;
+}
+.custom-indicator .indicator-name {
+  width: 180px;
+  max-width: 100%;
+  margin: 0;
+  padding: 8px;
+  font: inherit;
+}
+.custom-indicator select {
+  width: auto;
+  margin: 0;
 }
 .color-picker {
   position: relative;

@@ -38,6 +38,7 @@ test('Deployment allows only same-origin connections, scripts and workers', () =
     'src/scheduler.js',
     'src/spreadsheet.js',
     'src/takeovers.js',
+    'src/color-checks.js',
     'src/spreadsheet-jobs.js',
     'src/spreadsheet-worker.js',
   ])

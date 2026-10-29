@@ -249,91 +249,122 @@ frame.onload = async () => {
           ),
       ));
     const storageKey = 'mathnasium.schedule-colors.v1';
-    test('Color pickers start with no selected colors', () =>
+    test('Fixed director controls are gone and Assessment is an ordinary removable indicator', () => {
+      const row = d.querySelector('#colorIndicators .custom-indicator');
+      assert(!d.getElementById('directorColor') && !d.getElementById('assessmentColor'));
       assert(
-        d.getElementById('directorColorStatus').textContent === 'Not set' &&
-          d.getElementById('assessmentColorStatus').textContent === 'Not set',
-      ));
-    const chooseColor = (kind, color) => {
-      const input = d.getElementById(kind + 'Color');
-      input.value = color;
-      input.dispatchEvent(new w.Event('change', { bubbles: true }));
-    };
-    chooseColor('director', '#ffd966');
-    chooseColor('assessment', '#00ff00');
-    test('Only selected color preferences are stored locally', () => {
-      const saved = JSON.parse(w.localStorage.getItem(storageKey));
+        row.querySelector('input[type=text]').value === 'Assessment' &&
+          row.querySelector('select').value === 'assessment',
+      );
       assert(
-        saved.directorColor === '#FFD966' &&
-          saved.assessmentColor === '#00FF00' &&
-          Object.keys(saved).length === 2,
+        row.textContent.includes('Not set') && row.querySelector('button').textContent === 'Remove',
       );
     });
-    test('Changing color settings invalidates old schedule output', () =>
-      assert(d.getElementById('results').hidden));
-    chooseColor('assessment', '#ffd966');
-    test('Assessment and director cannot use the same color', () =>
+    d.querySelector('#colorIndicators button').click();
+    test('Removing the default Assessment invalidates output and saves an empty list', () =>
       assert(
-        d.getElementById('assessmentColorStatus').textContent === '#00FF00' &&
-          d.getElementById('colorPreferenceStatus').textContent.includes('different colors'),
+        d.getElementById('results').hidden &&
+          JSON.parse(w.localStorage.getItem(storageKey)).colorIndicators.length === 0,
       ));
-    const savedFrame = document.createElement('iframe');
-    const reloaded = new Promise((resolve) => (savedFrame.onload = resolve));
-    savedFrame.src = '../test-app.html';
-    document.body.append(savedFrame);
-    await reloaded;
-    test('Saved colors are restored when the app opens again', () =>
-      assert(
-        savedFrame.contentDocument.getElementById('directorColorStatus').textContent ===
-          '#FFD966' &&
-          savedFrame.contentDocument.getElementById('assessmentColorStatus').textContent ===
-            '#00FF00',
-      ));
-    savedFrame.remove();
-    const originalWorker = w.Worker;
-    let forwardedOptions;
-    w.Worker = class extends originalWorker {
-      postMessage(task, ...rest) {
-        if (task.type === 'generate') forwardedOptions = task.options;
-        return super.postMessage(task, ...rest);
-      }
-    };
-    try {
-      await w.generate();
-    } finally {
-      w.Worker = originalWorker;
+    async function openSettingsCopy() {
+      const copy = document.createElement('iframe');
+      const loaded = new Promise((resolve) => (copy.onload = resolve));
+      copy.src = '../test-app.html';
+      document.body.append(copy);
+      await loaded;
+      return copy;
     }
-    test('Saved color choices are passed to the parser worker', () =>
+    const emptyCopy = await openSettingsCopy();
+    test('Removed Assessment stays removed on the next visit', () =>
+      assert(!emptyCopy.contentDocument.querySelector('#colorIndicators .custom-indicator')));
+    emptyCopy.remove();
+    w.localStorage.setItem(
+      storageKey,
+      JSON.stringify({ directorColor: '#FFD966', assessmentColor: '#00FF00' }),
+    );
+    const legacyCopy = await openSettingsCopy();
+    test('Previously saved fixed colors migrate to removable indicators', () => {
+      const rows = [
+        ...legacyCopy.contentDocument.querySelectorAll('#colorIndicators .custom-indicator'),
+      ];
       assert(
-        forwardedOptions.directorColor === '#FFD966' &&
-          forwardedOptions.assessmentColor === '#00FF00',
-      ));
-    const storagePrototype = w.Storage.prototype,
-      originalSetItem = storagePrototype.setItem;
-    storagePrototype.setItem = () => {
-      throw new Error('Storage unavailable');
-    };
-    try {
-      chooseColor('director', '#ffdd77');
-      test('Disabled local storage does not prevent choosing a color', () =>
-        assert(
-          d.getElementById('directorColorStatus').textContent === '#FFDD77' &&
-            d.getElementById('colorPreferenceStatus').textContent.includes('could not save'),
-        ));
-    } finally {
-      storagePrototype.setItem = originalSetItem;
-    }
-    d.getElementById('clearDirectorColor').click();
-    d.getElementById('clearAssessmentColor').click();
-    test('Clear resets both color controls and persisted values', () => {
-      const saved = JSON.parse(w.localStorage.getItem(storageKey));
+        rows.length === 2 &&
+          rows.some(
+            (row) =>
+              row.querySelector('input[type=text]').value === 'Center director' &&
+              row.querySelector('input[type=color]').value === '#ffd966',
+          ),
+      );
       assert(
-        d.getElementById('directorColorStatus').textContent === 'Not set' &&
-          d.getElementById('assessmentColorStatus').textContent === 'Not set' &&
-          saved.directorColor === null &&
-          saved.assessmentColor === null,
+        rows.some(
+          (row) =>
+            row.querySelector('select').value === 'assessment' &&
+            row.querySelector('input[type=color]').value === '#00ff00',
+        ),
       );
     });
+    legacyCopy.remove();
+    w.localStorage.setItem(storageKey, JSON.stringify({ colorIndicators: [] }));
+    d.getElementById('addColorIndicator').click();
+    let indicator = d.querySelector('#colorIndicators .custom-indicator');
+    test('Add color indicator creates an editable row with no selected color', () =>
+      assert(
+        indicator &&
+          indicator.textContent.includes('Not set') &&
+          indicator.querySelector('input[type=text]').value === '',
+      ));
+    const nameInput = indicator.querySelector('input[type=text]');
+    nameInput.value = 'Lilianna K';
+    nameInput.dispatchEvent(new w.Event('input'));
+    const customColor = indicator.querySelector('input[type=color]');
+    customColor.value = '#ffd966';
+    customColor.dispatchEvent(new w.Event('change'));
+    test('Named color indicators are persisted and included in parser options', () => {
+      const saved = JSON.parse(w.localStorage.getItem(storageKey));
+      assert(
+        saved.colorIndicators[0].name === 'Lilianna K' &&
+          saved.colorIndicators[0].color === '#FFD966',
+      );
+    });
+    const customReload = document.createElement('iframe');
+    const customLoaded = new Promise((resolve) => (customReload.onload = resolve));
+    customReload.src = '../test-app.html';
+    document.body.append(customReload);
+    await customLoaded;
+    test('Custom indicator names and colors return on the next visit', () => {
+      const restored = customReload.contentDocument.querySelector(
+        '#colorIndicators .custom-indicator',
+      );
+      assert(
+        restored.querySelector('input[type=text]').value === 'Lilianna K' &&
+          restored.querySelector('input[type=color]').value === '#ffd966',
+      );
+    });
+    customReload.remove();
+    d.getElementById('addColorIndicator').click();
+    const secondIndicator = d.querySelectorAll('#colorIndicators .custom-indicator')[1];
+    const secondColor = secondIndicator.querySelector('input[type=color]');
+    secondColor.value = '#ffd966';
+    secondColor.dispatchEvent(new w.Event('change'));
+    test('Duplicate custom colors are rejected without replacing the existing assignment', () =>
+      assert(
+        d.getElementById('colorPreferenceStatus').textContent.includes('different colors') &&
+          secondIndicator.textContent.includes('Not set'),
+      ));
+    const role = d.querySelector('#colorIndicators .custom-indicator select');
+    role.value = 'assessment';
+    role.dispatchEvent(new w.Event('change'));
+    test('Indicator behavior can be changed to assessment', () =>
+      assert(
+        JSON.parse(w.localStorage.getItem(storageKey)).colorIndicators[0].behavior === 'assessment',
+      ));
+    while (d.querySelector('#colorIndicators button'))
+      d.querySelector('#colorIndicators button').click();
+    test('Removing indicators also removes their saved mappings', () =>
+      assert(
+        !d.querySelector('#colorIndicators .custom-indicator') &&
+          JSON.parse(w.localStorage.getItem(storageKey)).colorIndicators.length === 0,
+      ));
     w.localStorage.removeItem(storageKey);
     const aiGrid = sheet([
       ['Time', 'elizabeth', 'abigail', 'Notes'],
@@ -422,6 +453,98 @@ frame.onload = async () => {
         ));
     } finally {
       w.fetch = originalFetch;
+    }
+    // SheetJS's writer omits styles; supply a styled sheet to the real worker
+    // after upload so this exercises color parsing as well as browser opt-in.
+    const colorGrid = ambiguousColorFixture();
+    await upload(
+      'binders',
+      book([
+        sheet([
+          ['Student', 'Binder'],
+          ['Samara Adams', 'A1'],
+          ['Ryan Clark', 'B2'],
+          ['Veer Shah', 'E5'],
+        ]),
+        'Binders',
+      ]),
+    );
+    const colorWorker = w.Worker;
+    w.Worker = class extends colorWorker {
+      postMessage(task, ...rest) {
+        return super.postMessage(
+          task.type === 'generate' ? { ...task, schedule: colorGrid } : task,
+          ...rest,
+        );
+      }
+    };
+    let colorCalls = 0;
+    w.fetch = async (url, options) => {
+      colorCalls++;
+      const item = JSON.parse(options.body).cases[0];
+      assert(
+        item.kind === 'color' &&
+          item.color === 'rgb:AFC0E0' &&
+          item.candidates.some((candidate) => candidate.instructor === 'yama'),
+      );
+      return Response.json({
+        resolutions: [
+          {
+            kind: 'color',
+            color: item.color,
+            cell: item.cell,
+            text: item.text,
+            time: item.time,
+            incomingInstructor: 'yama',
+            studentIds: item.appointments.map((row) => row.id),
+          },
+        ],
+      });
+    };
+    try {
+      await w.generate();
+      test('Uncertain color stays local with a warning when AI is disabled', () =>
+        assert(
+          colorCalls === 0 &&
+            d.getElementById('staffLists').textContent.includes('ACD') &&
+            d.getElementById('warningList').textContent.includes('uncertain shade'),
+        ));
+      d.getElementById('aiEnabled').click();
+      d.getElementById('aiAccessCode').value = 'synthetic-center-code';
+      await w.generate();
+      test('AI color-only request updates the correct instructor without a handoff', () => {
+        const section = [...d.querySelectorAll('#staffLists section')].find(
+          (section) => section.querySelector('h3').textContent === 'yama',
+        );
+        assert(
+          colorCalls === 1 &&
+            section.textContent.includes('Veer Shah (E5)') &&
+            section.textContent.includes('AI-assisted color assignment'),
+        );
+        assert(
+          !d.getElementById('warningList').textContent.includes('D2') &&
+            !d.getElementById('staffLists').textContent.includes('Handoff'),
+        );
+        assert(d.getElementById('aiStatus').textContent.includes('AI-assisted color assignment'));
+      });
+      d.getElementById('export').click();
+      const colorCsv = await exportedBlob.text();
+      test('AI color labels are included in CSV output', () =>
+        assert(
+          colorCsv.includes('AI-assisted color assignment') && colorCsv.includes('Veer Shah'),
+        ));
+      w.fetch = async () => Response.json({ resolutions: [] });
+      await w.generate();
+      test('Uncertain AI color response preserves the ACD fallback and warning', () =>
+        assert(
+          d.getElementById('staffLists').textContent.includes('ACD') &&
+            d.getElementById('warningList').textContent.includes('D2') &&
+            !d.getElementById('staffLists').textContent.includes('AI-assisted color assignment'),
+        ));
+    } finally {
+      w.fetch = originalFetch;
+      w.Worker = colorWorker;
+      if (d.getElementById('aiEnabled').checked) d.getElementById('aiEnabled').click();
     }
   } catch (error) {
     failures.push('Browser integration: ' + error.message);

@@ -241,6 +241,7 @@ const SpreadsheetParser = (() => {
     const teacherCells = new Set(),
       assessmentCells = new Set(),
       assessmentFills = new Set(),
+      spreadsheetAssessmentFills = new Set(),
       instructorByFill = new Map();
     const preferenceFill = (value) =>
       typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value)
@@ -249,12 +250,39 @@ const SpreadsheetParser = (() => {
     const directorFill = preferenceFill(options?.directorColor);
     const selectedAssessmentFill = preferenceFill(options?.assessmentColor);
     if (selectedAssessmentFill) assessmentFills.add(selectedAssessmentFill);
+    const namedColors = new Map();
+    if (Array.isArray(options?.colorIndicators)) {
+      for (const indicator of options.colorIndicators.slice(0, 50)) {
+        const color = preferenceFill(indicator?.color);
+        const name = typeof indicator?.name === 'string' ? indicator.name.trim() : '';
+        if (
+          !color ||
+          !name ||
+          name.length > 80 ||
+          !['instructor', 'assessment'].includes(indicator.behavior)
+        )
+          continue;
+        if (color === directorFill || color === selectedAssessmentFill || namedColors.has(color)) {
+          warnings.push(
+            `Conflicting color indicator ${indicator.color}; custom assignment was ignored.`,
+          );
+          if (namedColors.has(color)) namedColors.set(color, null);
+          continue;
+        }
+        namedColors.set(color, { teacher: name, table: '', behavior: indicator.behavior });
+      }
+      for (const [color, assignment] of namedColors)
+        if (assignment?.behavior === 'assessment') assessmentFills.add(color);
+    }
     for (let r = heading + 1; r <= bounds.e.r; r++) {
       for (let c = bounds.s.c; c <= bounds.e.c; c++) {
         if (/^assess?ments?$/i.test(text(cell(sheet, r, c)))) {
           assessmentCells.add(address(r, c));
           const color = fill(cell(sheet, r, c));
-          if (color) assessmentFills.add(color);
+          if (color) {
+            assessmentFills.add(color);
+            spreadsheetAssessmentFills.add(color);
+          }
         }
         const table = text(cell(sheet, r, c)).match(/^table\s*(\d+)$/i);
         if (!table) continue;
@@ -284,7 +312,8 @@ const SpreadsheetParser = (() => {
           color = fill(cell(sheet, r, c));
         if (
           !lowercaseInstructor(name) ||
-          assessmentFills.has(color) ||
+          (assessmentFills.has(color) &&
+            (!namedColors.has(color) || spreadsheetAssessmentFills.has(color))) ||
           handoffs.noteCells.has(address(r, c))
         )
           continue;
@@ -294,6 +323,43 @@ const SpreadsheetParser = (() => {
         else if (key(instructorByFill.get(color)?.teacher) !== key(name))
           instructorByFill.set(color, null);
       }
+    }
+    // Device preferences deliberately override inferred workbook color labels.
+    const manualAssignments = new Map(namedColors);
+    if (directorFill)
+      manualAssignments.set(directorFill, { teacher: 'Center director', behavior: 'instructor' });
+    if (selectedAssessmentFill)
+      manualAssignments.set(selectedAssessmentFill, {
+        teacher: 'Assessment',
+        behavior: 'assessment',
+      });
+    for (const [color, assignment] of manualAssignments) {
+      if (!assignment) continue;
+      const detected = instructorByFill.get(color);
+      const wasAssessment = spreadsheetAssessmentFills.has(color);
+      const conflict = wasAssessment
+        ? assignment.behavior !== 'assessment'
+        : instructorByFill.has(color) &&
+          (!detected ||
+            assignment.behavior === 'assessment' ||
+            key(detected.teacher) !== key(assignment.teacher));
+      if (conflict) {
+        const original = wasAssessment
+          ? 'Assessment'
+          : detected?.teacher || 'conflicting instructor labels';
+        const replacement =
+          assignment.behavior === 'assessment'
+            ? `${assignment.teacher} (Assessment)`
+            : assignment.teacher;
+        warnings.push(
+          `Manual color override ${color.replace(/^rgb:/, '#')}: spreadsheet indicates ${original}; your indicator assigns ${replacement}. Your indicator takes priority; verify this setting.`,
+        );
+      }
+    }
+    for (const [color, assignment] of namedColors) {
+      if (!assignment || assignment.behavior === 'assessment') continue;
+      assessmentFills.delete(color);
+      instructorByFill.set(color, { teacher: assignment.teacher, table: assignment.table });
     }
     // Handoff wording names an instructor at a particular time. It must not
     // relabel every earlier booking that happens to share the note's color.
@@ -328,6 +394,12 @@ const SpreadsheetParser = (() => {
       if (rival && rival.distance - best.distance < 10) return null;
       return best.assignment;
     }
+    const unresolvedColors = [],
+      colorApplied = [];
+    const colorPalette = [...instructorByFill]
+      .filter(([color, assignment]) => assignment && !assessmentFills.has(color))
+      .map(([color, assignment]) => ({ color, instructor: assignment.teacher }));
+    if (directorFill) colorPalette.push({ color: directorFill, instructor: 'Center director' });
     for (let c = bounds.s.c; c <= bounds.e.c; c++) {
       if (timeColumns.includes(c)) continue;
       const headerMerge = merges.find(
@@ -482,16 +554,44 @@ const SpreadsheetParser = (() => {
         }
         const next = starts.find((candidate) => candidate.r > teachingRow)?.r;
         const color = fill(cell(sheet, teachingRow, c));
-        const assignment = instructorForColor(color);
+        let assignment = instructorForColor(color);
+        let aiColor = false;
+        let colorCase = null;
+        if (color && !assignment && !instructorByFill.has(color) && !manualAssignments.has(color)) {
+          colorCase = ScheduleColorChecks.create({
+            sheet,
+            r: teachingRow,
+            c,
+            students,
+            start,
+            teachingStart,
+            staff,
+            color,
+            bounds,
+            heading,
+            times,
+            palette: colorPalette,
+            assessmentFills,
+            distance: colorDistance,
+            cell,
+            fill,
+            address,
+            clock,
+            instructorForColor,
+          });
+          if (colorCase) {
+            const suggested = ScheduleColorChecks.resolve(colorCase, options.colorResolutions);
+            if (suggested) {
+              assignment = suggested;
+              aiColor = true;
+            }
+          }
+        }
         const instructor =
           assignment?.teacher || (color ? (directorFill ? 'Unassigned instructor' : 'ACD') : staff);
         if (color && directorFill && !assignment)
           warnings.push(
             `${address(teachingRow, c)}: ${students.join(', ')} has a color that matches neither an instructor nor the selected director color.`,
-          );
-        if (color && instructorByFill.has(color) && !assignment)
-          warnings.push(
-            `${address(entry.r, c)}: this color has conflicting instructor names; ${entry.students.join(', ')} grouped under ACD.`,
           );
         // Notes belong to the preceding student in this lane, up to the next
         // student or the one-hour session boundary, regardless of fill shade.
@@ -507,6 +607,19 @@ const SpreadsheetParser = (() => {
           );
           return;
         }
+        if (color && !assignment) {
+          const reason = instructorByFill.has(color)
+            ? 'conflicting instructor labels'
+            : 'no clear instructor match';
+          warnings.push(
+            `${address(teachingRow, c)} (${staff}), ${clock(start)}: ${students.join(', ')} has color ${color.replace(/^rgb:/, '#')} with ${reason}; fell back to ${instructor}. Add or correct a color indicator.${colorCase ? ' Enable Optional AI help to check this uncertain shade using nearby instructor context.' : ' There is insufficient color evidence for an AI color check; Optional AI help can still check unresolved handoff notes.'}`,
+          );
+          if (colorCase && unresolvedColors.length < 10) unresolvedColors.push(colorCase);
+        }
+        if (aiColor)
+          colorApplied.push(
+            `${address(teachingRow, c)}: AI-assisted color assignment to ${instructor}.`,
+          );
         if (notes.some((note) => /\bmove\b/i.test(note)))
           warnings.push(
             `${address(entry.r, c)} (${staff}): appointment contains a move note; verify its time.`,
@@ -538,6 +651,7 @@ const SpreadsheetParser = (() => {
             ],
             notes: [
               ...sessionNotes(notes),
+              ...(aiColor ? ['AI-assisted color assignment'] : []),
               ...(teachingStart > start
                 ? [`Assessment: ${clock(start)} - ${clock(teachingStart)}`]
                 : []),
@@ -593,7 +707,7 @@ const SpreadsheetParser = (() => {
       .map((assignment) => assignment.teacher);
     if (directorFill) instructors.push('Center director');
     const unresolvedHandoffs = [],
-      aiApplied = [];
+      aiApplied = [...colorApplied];
     const segments = ScheduleTakeovers.apply(appointments, {
       sheet,
       notes: handoffs.notes,
@@ -614,7 +728,7 @@ const SpreadsheetParser = (() => {
       aiApplied,
       resolutions: options.handoffResolutions || [],
     });
-    return { rows: segments, warnings, unresolvedHandoffs, aiApplied };
+    return { rows: segments, warnings, unresolvedHandoffs, unresolvedColors, aiApplied };
   }
   return { key, isHighSchool, readBinders, readSchedule, minutes };
 })();

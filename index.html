@@ -21,46 +21,34 @@
 
       <div class="card no-print">
         <h2>2. Upload Staff Schedule</h2>
-        <label for="schedule">Staff .xlsx or .csv</label>
+        <label for="schedule">Upload .xlsx or .csv</label>
         <input type="file" id="schedule" accept=".xlsx,.csv" />
         <p id="scheduleStatus" role="status">No file selected</p>
         <label id="scheduleSheetLabel" for="scheduleSheet" hidden>Schedule sheet / day</label>
         <select id="scheduleSheet" hidden></select>
         <fieldset class="color-settings">
           <legend>Schedule colors</legend>
-          <div class="color-setting">
-            <label class="color-label" for="directorColor">Center director / ACD</label>
-            <span class="color-picker">
-              <canvas id="directorSwatch" width="32" height="32" aria-hidden="true"></canvas>
-              <input type="color" id="directorColor" aria-describedby="directorColorStatus" />
-            </span>
-            <span id="directorColorStatus">Not set</span>
-            <button type="button" id="clearDirectorColor">Clear</button>
-          </div>
-          <div class="color-setting">
-            <label class="color-label" for="assessmentColor">Assessment</label>
-            <span class="color-picker">
-              <canvas id="assessmentSwatch" width="32" height="32" aria-hidden="true"></canvas>
-              <input type="color" id="assessmentColor" aria-describedby="assessmentColorStatus" />
-            </span>
-            <span id="assessmentColorStatus">Not set</span>
-            <button type="button" id="clearAssessmentColor">Clear</button>
-          </div>
+          <div id="colorIndicators"></div>
+          <button type="button" id="addColorIndicator">Add color indicator</button>
+          <p class="color-hint">
+            Enter a name and choose a color to activate an indicator. Use Assessment behavior for
+            assessment portions of appointments.
+          </p>
           <p class="color-hint">
             Click a box to choose a color. Colors are saved in this browser; student files are not
-            saved.
+            saved. Color choices here take priority over detected colors in spreadsheet.
           </p>
           <p id="colorPreferenceStatus" role="status"></p>
         </fieldset>
         <details class="ai-settings">
           <summary>Optional AI help</summary>
           <label class="ai-toggle" for="aiEnabled">
-            <input type="checkbox" id="aiEnabled" /> Check unresolved handoffs with AI
+            <input type="checkbox" id="aiEnabled" /> Check uncertain colors and handoffs with AI
           </label>
           <p class="color-hint">
-            Off by default. When enabled, unresolved notes, relevant appointments and nearby cells
-            are sent to OpenAI through this site's server. The binder roster and workbook files are
-            not sent. AI can make mistakes; assisted handoffs are labeled.
+            Off by default. When enabled, uncertain colors, unresolved notes, relevant appointments
+            and nearby cells are sent to OpenAI through this site's server. The binder roster and
+            workbook files are not sent. AI can make mistakes; assisted assignments are labeled.
           </p>
           <div id="aiAccessSettings" hidden>
             <label for="aiAccessCode">Center AI access code</label>

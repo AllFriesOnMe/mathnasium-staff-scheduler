@@ -11,6 +11,7 @@ export const publicFiles = Object.freeze([
   'src/scheduler.js',
   'src/spreadsheet.js',
   'src/takeovers.js',
+  'src/color-checks.js',
   'src/spreadsheet-jobs.js',
   'src/spreadsheet-worker.js',
   '_headers',

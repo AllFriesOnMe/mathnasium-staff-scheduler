@@ -18,9 +18,11 @@ To enable the optional backend:
    code. The access code is kept in memory until the page closes or AI is
    unchecked. It is not the OpenAI API key. Share it only with authorized staff.
 
-Nothing is sent when AI is off or there are no unresolved handoff notes. When
-enabled, up to ten unresolved notes, their active appointment candidates,
-instructor names, and nearby cell text/colors are sent through the same-origin
+Nothing is sent when AI is off or there are no eligible uncertain colors or
+unresolved handoff notes. When enabled, the app checks up to ten uncertain color
+cases first, then rebuilds the schedule and checks up to ten unresolved handoff
+notes. Each stage sends one request. Relevant appointments, instructor names,
+color candidates and nearby cell text/colors are sent through the same-origin
 endpoint to OpenAI. Workbook files and the binder roster are never uploaded.
 Nearby cells and appointment candidates may contain student names. Do not
 enable this unless the center permits sending that information to OpenAI.
@@ -32,8 +34,13 @@ log payloads, persist student data, or return provider error details.
 Responses are checked against known instructors, student IDs and booking times,
 then checked again by the local parser. Existing rule-resolved notes take
 priority. Uncertain, invalid, timed-out or failed AI results leave local output
-and warnings intact. Accepted handoffs are labeled AI-assisted on both staff
-schedules and in CSV output. This fallback is not a full schedule audit and
+and warnings intact. Accepted handoffs and color corrections are labeled
+AI-assisted in staff schedules and CSV output. Manual indicators and exact
+spreadsheet matches take priority. Color checks require a plausible nearby RGB
+shade and corroborating instructor context. Completely unfamiliar colors,
+conflicting exact labels and possible assessment shades still need a manual
+indicator. Corrections apply to individual cells, never globally to every
+similar-looking color. This fallback is not a full schedule audit and
 cannot guarantee that the underlying interpretation is correct.
 
 The endpoint requires the center access code and a same-origin request. The

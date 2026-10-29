@@ -1,5 +1,5 @@
 'use strict';
-importScripts('../vendor/xlsx.full.min.js', 'takeovers.js', 'spreadsheet.js');
+importScripts('../vendor/xlsx.full.min.js', 'takeovers.js', 'color-checks.js', 'spreadsheet.js');
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 function validateBook(book) {
   if (!book.SheetNames?.length) throw new Error('This workbook has no sheets.');

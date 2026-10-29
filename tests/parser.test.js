@@ -291,7 +291,7 @@ test('Unassigned yellow and other colors belong to ACD', () => {
   s.C2.s = { patternType: 'solid', fgColor: { rgb: 'CFE2F3' } };
   const p = P.readSchedule(s, roster);
   assert(p.rows.length === 2 && p.rows.every((r) => r.staff === 'ACD'));
-  assert(!p.warnings.some((w) => /no unambiguous|instructor|assessment/.test(w)));
+  assert(p.warnings.filter((w) => w.includes('fell back to ACD')).length === 2);
 });
 test('Named instructor on yellow overrides ACD fallback', () => {
   const s = sheet([

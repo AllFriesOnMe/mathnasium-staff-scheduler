@@ -43,6 +43,50 @@ const never = () => {
   throw new Error('Unexpected provider request');
 };
 
+function colorExample() {
+  return {
+    ...example(),
+    kind: 'color',
+    color: 'rgb:AFC0E0',
+    text: 'Color rgb:AFC0E0 for Jaydon L',
+    time: '13:00',
+    candidates: [{ instructor: 'adrian', color: 'rgb:A0C0E0', distance: 15 }],
+    nearby: [{ cell: 'B21', text: 'adrian', color: 'rgb:A0C0E0', instructor: 'adrian', time: 780 }],
+  };
+}
+test('AI color candidates require a close RGB shade and corroborating instructor context', () => {
+  const valid = validateCases([colorExample()]);
+  assert.equal(valid[0].kind, 'color');
+  for (const patch of [
+    { color: 'bad' },
+    { candidates: [] },
+    { nearby: [] },
+    { candidates: [{ instructor: 'adrian', color: 'rgb:FFFFFF', distance: 15 }] },
+    { candidates: [{ instructor: 'invented', color: 'rgb:A0C0E0', distance: 15 }] },
+  ])
+    assert.throws(() => validateCases([{ ...colorExample(), ...patch }]));
+});
+test('AI color output is limited to supplied candidates, all students and the original time', () => {
+  const cases = validateCases([colorExample()]);
+  const entry = { ...suggestion(), time: '13:00' };
+  const [result] = validateResolutions([entry], cases);
+  assert.equal(result.kind, 'color');
+  assert.equal(result.color, 'rgb:AFC0E0');
+  assert.throws(() => validateResolutions([{ ...entry, incomingInstructor: 'luca' }], cases));
+  assert.throws(() => validateResolutions([{ ...entry, time: '13:30' }], cases));
+  assert.deepEqual(validateResolutions([{ ...entry, confident: false }], cases), []);
+  const multiple = validateCases([
+    {
+      ...colorExample(),
+      appointments: [
+        ...colorExample().appointments,
+        { id: 'a1', student: 'Another Student', staff: 'luca', start: '13:00', end: '14:00' },
+      ],
+    },
+  ]);
+  assert.throws(() => validateResolutions([entry], multiple));
+});
+
 test('AI defaults off and requires every deployment credential', async () => {
   for (const field of [
     'AI_ENABLED',

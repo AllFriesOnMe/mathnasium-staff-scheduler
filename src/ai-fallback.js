@@ -3,7 +3,9 @@ const AiFallback = (() => {
   async function resolve(cases, accessCode, signal, send = fetch) {
     if (!cases?.length) return [];
     if (!accessCode.trim())
-      throw new Error('Enter the center’s AI access code to check unresolved handoffs.');
+      throw new Error(
+        'Enter the center’s AI access code to check unresolved schedule assignments.',
+      );
     const body = JSON.stringify({ cases });
     if (new TextEncoder().encode(body).length > 128 * 1024)
       throw new Error('Too much unresolved context for one AI check. Local results are unchanged.');
