@@ -148,8 +148,35 @@
     const result = await SpreadsheetJobs.run({ type: 'generate', binders, schedule });
     assert(result.rows[0].binder === 'A1' && result.rows[0].end === '11:00');
   });
+  await check('Worker applies selected colors and retains assessment handoff note', async () => {
+    const binders = book([
+      ['Student', 'Binder'],
+      ['Jane Doe', 'A1'],
+    ]).Sheets.Sheet1;
+    const schedule = book([
+      ['Time', 'IC 1'],
+      ['10:00', 'Jane D'],
+      ['10:15', ''],
+      ['11:00', ''],
+    ]).Sheets.Sheet1;
+    schedule.B2.s = { patternType: 'solid', fgColor: { rgb: '00FF00' } };
+    schedule.B3.s = { patternType: 'solid', fgColor: { rgb: 'FFD966' } };
+    const result = await SpreadsheetJobs.run({
+      type: 'generate',
+      binders,
+      schedule,
+      options: { directorColor: '#FFD966', assessmentColor: '#00FF00' },
+    });
+    assert(
+      result.rows.length === 1 &&
+        result.rows[0].staff === 'Center director' &&
+        result.rows[0].start === '10:00' &&
+        result.rows[0].end === '11:00' &&
+        result.rows[0].notes.includes('Assessment: 10:00 - 10:15'),
+    );
+  });
   await check('CSP blocks outbound fetch', async () => {
-    await rejected(() => fetch('/src/scheduler.js'), /fetch|network|load/i);
+    await rejected(() => fetch('https://example.com/'), /fetch|network|load/i);
   });
   document.getElementById('testResults').textContent =
     `${passed.length} passed; ${failures.length} failed\n` +

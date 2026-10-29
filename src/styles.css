@@ -4,9 +4,66 @@ body {
   margin: 0;
   padding: 40px 20px;
 }
+
+.color-settings {
+  border: 1px solid #ddd;
+  border-radius: 6px;
+  margin: 20px 0 0;
+  padding: 12px;
+}
+.color-setting {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 10px;
+  margin: 10px 0;
+}
+.color-label {
+  width: 165px;
+}
+.color-picker {
+  position: relative;
+  display: inline-flex;
+  width: 32px;
+  height: 32px;
+  border: 1px solid #aaa;
+  border-radius: 4px;
+  overflow: hidden;
+}
+.color-picker input[type='color'] {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  margin: 0;
+  padding: 0;
+  opacity: 0;
+  cursor: pointer;
+}
+.color-picker:focus-within {
+  outline: 2px solid #245b46;
+  outline-offset: 3px;
+}
+.color-hint {
+  color: #555;
+  font-size: 14px;
+  line-height: 1.5;
+}
 main {
   max-width: 700px;
   margin: auto;
+}
+.ai-settings {
+  margin-top: 16px;
+}
+.ai-toggle {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-top: 12px;
+}
+.ai-toggle input {
+  margin: 0;
 }
 .card {
   background: white;

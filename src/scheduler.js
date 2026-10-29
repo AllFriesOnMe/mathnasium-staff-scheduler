@@ -13,6 +13,7 @@ function invalidate() {
   $('generate').disabled = false;
   $('results').hidden = true;
   $('importStatus').textContent = '';
+  $('aiStatus').textContent = '';
   exportedRows = [];
 }
 function sheetId(kind) {
@@ -65,14 +66,39 @@ async function generate() {
   $('generate').disabled = true;
   try {
     if (!books.binders || !books.schedule) throw new Error('Upload both spreadsheets first.');
-    const parsed = await SpreadsheetJobs.run(
-      {
-        type: 'generate',
-        binders: books.binders.Sheets[$('binderSheet').value],
-        schedule: books.schedule.Sheets[$('scheduleSheet').value],
-      },
-      { signal: controller.signal },
-    );
+    const task = {
+      type: 'generate',
+      binders: books.binders.Sheets[$('binderSheet').value],
+      schedule: books.schedule.Sheets[$('scheduleSheet').value],
+      options: ColorPreferences.get(),
+    };
+    let parsed = await SpreadsheetJobs.run(task, { signal: controller.signal });
+    if (controller.signal.aborted) return;
+    if ($('aiEnabled').checked && parsed.unresolvedHandoffs?.length) {
+      $('aiStatus').textContent = 'Checking unresolved handoffs with AI...';
+      try {
+        const resolutions = await AiFallback.resolve(
+          parsed.unresolvedHandoffs,
+          $('aiAccessCode').value,
+          controller.signal,
+        );
+        if (controller.signal.aborted) return;
+        if (resolutions.length) {
+          const checked = await SpreadsheetJobs.run(
+            { ...task, options: { ...task.options, handoffResolutions: resolutions } },
+            { signal: controller.signal },
+          );
+          parsed = checked;
+        }
+        $('aiStatus').textContent = parsed.aiApplied?.length
+          ? parsed.aiApplied.join(' ')
+          : 'AI could not resolve any additional handoffs confidently. See import warnings.';
+      } catch (error) {
+        if (controller.signal.aborted) return;
+        $('aiStatus').textContent = `AI check unavailable: ${error.message}`;
+      }
+    } else if ($('aiEnabled').checked)
+      $('aiStatus').textContent = 'No unresolved handoffs; no AI request was sent.';
     if (controller.signal.aborted) return;
     const rows = parsed.rows,
       warnings = [...parsed.warnings];
@@ -183,3 +209,10 @@ $('scheduleSheet').onchange = invalidate;
 $('generate').onclick = generate;
 $('print').onclick = () => window.print();
 $('export').onclick = download;
+ColorPreferences.onChange(invalidate);
+$('aiEnabled').onchange = () => {
+  $('aiAccessSettings').hidden = !$('aiEnabled').checked;
+  if (!$('aiEnabled').checked) $('aiAccessCode').value = '';
+  invalidate();
+};
+$('aiAccessCode').oninput = invalidate;

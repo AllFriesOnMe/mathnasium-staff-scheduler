@@ -1,0 +1,51 @@
+Optional AI fallback on Cloudflare Workers
+
+The application works locally without AI. The checkbox is unchecked on every
+page load, and wrangler.jsonc also disables AI on the server by default.
+
+To enable the optional backend:
+1. Run npm run build.
+2. Choose an OpenAI model supporting Responses API structured outputs. The
+   OPENAI_MODEL variable in wrangler.jsonc starts with gpt-4o-mini; change it
+   if your API project uses another supported model.
+3. Set AI_ENABLED to "true" in wrangler.jsonc.
+4. Run npx wrangler secret put OPENAI_API_KEY and paste your API key.
+5. Generate a random center access code with at least 24 characters, then run
+   npx wrangler secret put AI_ACCESS_TOKEN and paste that code.
+6. Run npx wrangler deploy using this repository's wrangler.jsonc. This must
+   deploy a Worker with static assets, rather than uploading dist alone.
+7. Staff expand Optional AI help, check the box, and enter the center access
+   code. The access code is kept in memory until the page closes or AI is
+   unchecked. It is not the OpenAI API key. Share it only with authorized staff.
+
+Nothing is sent when AI is off or there are no unresolved handoff notes. When
+enabled, up to ten unresolved notes, their active appointment candidates,
+instructor names, and nearby cell text/colors are sent through the same-origin
+endpoint to OpenAI. Workbook files and the binder roster are never uploaded.
+Nearby cells and appointment candidates may contain student names. Do not
+enable this unless the center permits sending that information to OpenAI.
+
+The request uses store:false. That does not promise zero provider retention;
+the API project's applicable data policies still apply. The worker does not
+log payloads, persist student data, or return provider error details.
+
+Responses are checked against known instructors, student IDs and booking times,
+then checked again by the local parser. Existing rule-resolved notes take
+priority. Uncertain, invalid, timed-out or failed AI results leave local output
+and warnings intact. Accepted handoffs are labeled AI-assisted on both staff
+schedules and in CSV output. This fallback is not a full schedule audit and
+cannot guarantee that the underlying interpretation is correct.
+
+The endpoint requires the center access code and a same-origin request. The
+Cloudflare rate-limit binding allows approximately six requests per minute per
+location. Set project usage limits with your API provider as well. If namespace
+1001 is already used by another Worker, select a distinct namespace_id.
+Protect the site with the center's Cloudflare Access policy if required.
+
+For local backend development, use npx wrangler dev. A local .dev.vars file can
+hold secrets; it is ignored by git. npm start remains a static-only server.
+Never place keys in index.html, frontend JavaScript, dist, or git.
+
+References:
+https://developers.openai.com/api/docs/guides/structured-outputs
+https://developers.cloudflare.com/workers/runtime-apis/bindings/rate-limit/

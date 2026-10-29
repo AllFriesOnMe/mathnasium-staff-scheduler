@@ -12,6 +12,8 @@ if (testMode)
   for (const file of [
     'tests/parser.html',
     'tests/parser.test.js',
+    'tests/color-preferences.test.js',
+    'tests/takeovers.test.js',
     'tests/helpers.js',
     'tests/app.test.js',
     'tests/security.html',

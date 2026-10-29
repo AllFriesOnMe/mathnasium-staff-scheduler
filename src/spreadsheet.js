@@ -190,7 +190,7 @@ const SpreadsheetParser = (() => {
       ),
     );
   }
-  function readSchedule(sheet, roster) {
+  function readSchedule(sheet, roster, options = {}) {
     const bounds = range(sheet),
       rows = [],
       warnings = [];
@@ -235,12 +235,20 @@ const SpreadsheetParser = (() => {
         'Could not find a time-grid header (Start Time or Time), or a Staff/Start/End/Student list.',
       );
     const merges = sheet['!merges'] || [];
+    const handoffs = ScheduleTakeovers.collect({ sheet, bounds, heading, cell, text, address });
     const ignoredNote =
       /^(?:needs?\b|attention\b|table\s*\d|binder\b|cancel(?:led|ed)?\b|assess?ments?\b|g(?:r(?:ade)?)?\s*\d|adv\b|move\b|physics?\b|phy\b|\d)/i;
     const teacherCells = new Set(),
       assessmentCells = new Set(),
       assessmentFills = new Set(),
       instructorByFill = new Map();
+    const preferenceFill = (value) =>
+      typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value)
+        ? `rgb:${value.slice(1).toUpperCase()}`
+        : null;
+    const directorFill = preferenceFill(options?.directorColor);
+    const selectedAssessmentFill = preferenceFill(options?.assessmentColor);
+    if (selectedAssessmentFill) assessmentFills.add(selectedAssessmentFill);
     for (let r = heading + 1; r <= bounds.e.r; r++) {
       for (let c = bounds.s.c; c <= bounds.e.c; c++) {
         if (/^assess?ments?$/i.test(text(cell(sheet, r, c)))) {
@@ -251,7 +259,8 @@ const SpreadsheetParser = (() => {
         const table = text(cell(sheet, r, c)).match(/^table\s*(\d+)$/i);
         if (!table) continue;
         const teacher = text(cell(sheet, r - 1, c));
-        if (!teacher || ignoredNote.test(teacher)) continue;
+        if (!teacher || ignoredNote.test(teacher) || handoffs.noteCells.has(address(r - 1, c)))
+          continue;
         teacherCells.add(address(r - 1, c));
         const color = fill(cell(sheet, r, c));
         if (!color) continue;
@@ -266,12 +275,19 @@ const SpreadsheetParser = (() => {
     }
     // A lowercase name is an instructor annotation, even without a table label.
     const lowercaseInstructor = (value) =>
-      /^\p{Ll}[\p{L}\p{M}'\u2019 .-]*$/u.test(value) && !ignoredNote.test(value);
+      /^\p{Ll}[\p{L}\p{M}'\u2019 .-]*$/u.test(value) &&
+      !ignoredNote.test(value) &&
+      !ScheduleTakeovers.isNote(value);
     for (let r = heading + 1; r <= bounds.e.r; r++) {
       for (let c = bounds.s.c; c <= bounds.e.c; c++) {
         const name = text(cell(sheet, r, c)),
           color = fill(cell(sheet, r, c));
-        if (!lowercaseInstructor(name) || assessmentFills.has(color)) continue;
+        if (
+          !lowercaseInstructor(name) ||
+          assessmentFills.has(color) ||
+          handoffs.noteCells.has(address(r, c))
+        )
+          continue;
         teacherCells.add(address(r, c));
         if (!color) continue;
         if (!instructorByFill.has(color)) instructorByFill.set(color, { teacher: name, table: '' });
@@ -279,14 +295,22 @@ const SpreadsheetParser = (() => {
           instructorByFill.set(color, null);
       }
     }
+    // Handoff wording names an instructor at a particular time. It must not
+    // relabel every earlier booking that happens to share the note's color.
     function instructorForColor(color) {
+      if (!color || assessmentFills.has(color)) return null;
+      if (color === directorFill) return { teacher: 'Center director', table: '' };
       // Explicit labels always win, even when two instructors use nearby shades.
       if (instructorByFill.has(color)) return instructorByFill.get(color);
-      if (!color || assessmentFills.has(color)) return null;
       const candidates = [...instructorByFill].map(([knownColor, assignment]) => ({
         assignment,
         distance: colorDistance(color, knownColor),
       }));
+      if (directorFill)
+        candidates.push({
+          assignment: { teacher: 'Center director', table: '' },
+          distance: colorDistance(color, directorFill),
+        });
       // Assessment colors also compete, so a nearby assessment shade cannot
       // silently become an instructor's student through approximate matching.
       assessmentFills.forEach((knownColor) =>
@@ -344,7 +368,7 @@ const SpreadsheetParser = (() => {
           !raw ||
           teacherCells.has(address(r, c)) ||
           assessmentCells.has(address(r, c)) ||
-          assessmentFills.has(fill(cell(sheet, r, c)))
+          handoffs.noteCells.has(address(r, c))
         )
           continue;
         if (
@@ -354,7 +378,8 @@ const SpreadsheetParser = (() => {
           )
         )
           continue;
-        const students = [];
+        const students = [],
+          nameWarnings = [];
         raw
           .split(/\r?\n|;/)
           .filter(Boolean)
@@ -367,12 +392,13 @@ const SpreadsheetParser = (() => {
               )
               .trim();
             if (!value) return;
+            if (ScheduleTakeovers.isNote(value)) return;
             if (lowercaseInstructor(value)) return;
             const match = matchName(value, roster);
             if (match) {
               students.push(match.entry.name);
               if (match.abbreviated)
-                warnings.push(
+                nameWarnings.push(
                   `${address(r, c)}: ${value} matched uniquely to ${match.entry.name}.`,
                 );
             } else if (
@@ -382,36 +408,96 @@ const SpreadsheetParser = (() => {
             ) {
               // High-school students need not have a binder. Keep their schedule name.
               students.push(value.trim());
-            } else if (!ignoredNote.test(value))
+            } else if (!ignoredNote.test(value) && !assessmentFills.has(fill(cell(sheet, r, c))))
               warnings.push(
                 `${address(r, c)} (${staff}): unmatched text "${value}" was not imported. It may be a student or a note.`,
               );
           });
-        if (students.length) starts.push({ r, students });
+        if (students.length) starts.push({ r, students, nameWarnings });
       }
+      const consumedContinuations = new Set();
       starts.forEach((entry, index) => {
-        const start = times.get(entry.r);
+        let startRow = entry.r;
+        if (assessmentFills.has(fill(cell(sheet, entry.r, c)))) {
+          for (let r = entry.r - 1; r > heading; r--) {
+            if (
+              !assessmentFills.has(fill(cell(sheet, r, c))) ||
+              starts.some((candidate) => candidate.r === r)
+            )
+              break;
+            if (assessmentCells.has(address(r, c))) {
+              startRow = r;
+              break;
+            }
+          }
+        }
+        const start = times.get(startRow);
         if (start === undefined) {
           warnings.push(
             `${address(entry.r, c)}: no start-time label for ${entry.students.join(', ')}; appointment omitted.`,
           );
           return;
         }
-        const next = starts[index + 1]?.r;
-        const color = fill(cell(sheet, entry.r, c));
+        const students = entry.students.filter(
+          (student) => !consumedContinuations.has(`${entry.r}:${key(student)}`),
+        );
+        if (!students.length) return;
+        let teachingRow = entry.r;
+        const hourEndRow =
+          [...times].find(([r, time]) => r > entry.r && time >= start + 60)?.[0] ?? bounds.e.r + 1;
+        if (assessmentFills.has(fill(cell(sheet, entry.r, c)))) {
+          // Exclude only the assessment portion, not the student's later
+          // instructor-colored cells. Keep the original appointment end time.
+          const nextEntry = starts[index + 1];
+          const sameStudents =
+            nextEntry &&
+            nextEntry.students.every((student) =>
+              students.some((name) => key(name) === key(student)),
+            );
+          const limit = Math.min(
+            hourEndRow,
+            nextEntry ? nextEntry.r + (sameStudents ? 1 : 0) : bounds.e.r + 1,
+          );
+          teachingRow = -1;
+          for (let r = entry.r + 1; r < limit; r++) {
+            const color = fill(cell(sheet, r, c));
+            if (color && !assessmentFills.has(color)) {
+              teachingRow = r;
+              break;
+            }
+          }
+          if (teachingRow < 0) return; // Assessment-only booking.
+          if (nextEntry?.r === teachingRow && sameStudents) {
+            students.forEach((student) =>
+              consumedContinuations.add(`${teachingRow}:${key(student)}`),
+            );
+          }
+        }
+        const teachingStart = times.get(teachingRow);
+        if (teachingStart === undefined) {
+          warnings.push(
+            `${address(teachingRow, c)}: no time label for the instructor portion of ${students.join(', ')}.`,
+          );
+          return;
+        }
+        const next = starts.find((candidate) => candidate.r > teachingRow)?.r;
+        const color = fill(cell(sheet, teachingRow, c));
         const assignment = instructorForColor(color);
-        const instructor = assignment?.teacher || (color ? 'ACD' : staff);
+        const instructor =
+          assignment?.teacher || (color ? (directorFill ? 'Unassigned instructor' : 'ACD') : staff);
+        if (color && directorFill && !assignment)
+          warnings.push(
+            `${address(teachingRow, c)}: ${students.join(', ')} has a color that matches neither an instructor nor the selected director color.`,
+          );
         if (color && instructorByFill.has(color) && !assignment)
           warnings.push(
             `${address(entry.r, c)}: this color has conflicting instructor names; ${entry.students.join(', ')} grouped under ACD.`,
           );
         // Notes belong to the preceding student in this lane, up to the next
         // student or the one-hour session boundary, regardless of fill shade.
-        const hourEndRow =
-          [...times].find(([r, time]) => r > entry.r && time >= start + 60)?.[0] ?? bounds.e.r + 1;
         const noteEnd = Math.min(next ?? bounds.e.r + 1, hourEndRow);
         const notes = [];
-        for (let r = entry.r; r < noteEnd; r++) {
+        for (let r = teachingRow; r < noteEnd; r++) {
           if (!teacherCells.has(address(r, c)) && !assessmentFills.has(fill(cell(sheet, r, c))))
             notes.push(text(cell(sheet, r, c)));
         }
@@ -425,14 +511,37 @@ const SpreadsheetParser = (() => {
           warnings.push(
             `${address(entry.r, c)} (${staff}): appointment contains a move note; verify its time.`,
           );
-        entry.students.forEach((student) =>
+        warnings.push(...entry.nameWarnings);
+        students.forEach((student) =>
           rows.push({
             staff: instructor,
             table: assignment?.table || '',
             section: staff,
             student,
             start: clock(start),
-            notes: sessionNotes(notes),
+            sessionStart: clock(start),
+            sourceColumn: c,
+            sourceRow: entry.r,
+            teachingStart: clock(teachingStart),
+            sources: [
+              {
+                column: c,
+                row: teachingRow,
+                teachingStart: clock(teachingStart),
+                stopRow:
+                  starts.find(
+                    (candidate) =>
+                      candidate.r > teachingRow &&
+                      !candidate.students.some((name) => key(name) === key(student)),
+                  )?.r ?? null,
+              },
+            ],
+            notes: [
+              ...sessionNotes(notes),
+              ...(teachingStart > start
+                ? [`Assessment: ${clock(start)} - ${clock(teachingStart)}`]
+                : []),
+            ],
           }),
         );
       });
@@ -444,11 +553,12 @@ const SpreadsheetParser = (() => {
       const id = JSON.stringify([key(row.student), key(row.staff)]);
       if (!sessions.has(id)) sessions.set(id, new Map());
       const appearances = sessions.get(id);
-      if (!appearances.has(row.start))
-        appearances.set(row.start, { ...row, notes: [...row.notes] });
+      if (!appearances.has(row.sessionStart))
+        appearances.set(row.sessionStart, { ...row, notes: [...row.notes] });
       else {
-        const original = appearances.get(row.start);
+        const original = appearances.get(row.sessionStart);
         original.notes = [...new Set([...original.notes, ...row.notes])];
+        original.sources.push(...row.sources);
         warnings.push(
           `Duplicate entry for ${row.student}, ${row.staff}, ${row.start}; kept one occurrence.`,
         );
@@ -456,23 +566,55 @@ const SpreadsheetParser = (() => {
     });
     const appointments = [];
     sessions.forEach((appearances) => {
-      const entries = [...appearances.values()].sort((a, b) => a.start.localeCompare(b.start));
+      const entries = [...appearances.values()].sort((a, b) =>
+        a.sessionStart.localeCompare(b.sessionStart),
+      );
       for (let i = 0; i < entries.length; i++) {
         const row = entries[i],
           next = entries[i + 1];
-        const twoHours = next && minutes(next.start) - minutes(row.start) === 60;
-        const durationMinutes = twoHours ? 120 : 60;
+        const twoHours = next && minutes(next.sessionStart) - minutes(row.sessionStart) === 60;
+        const bookedDurationMinutes = twoHours ? 120 : 60;
+        const sessionEnd = minutes(row.sessionStart) + bookedDurationMinutes;
+        const durationMinutes = sessionEnd - minutes(row.start);
         const notes = twoHours ? [...new Set([...row.notes, ...next.notes])] : row.notes;
         appointments.push({
           ...row,
           notes,
           durationMinutes,
-          end: clock(minutes(row.start) + durationMinutes),
+          bookedDurationMinutes,
+          sources: twoHours ? [...row.sources, ...next.sources] : row.sources,
+          end: clock(sessionEnd),
         });
         if (twoHours) i++;
       }
     });
-    return { rows: appointments, warnings };
+    const instructors = [...instructorByFill.values()]
+      .filter(Boolean)
+      .map((assignment) => assignment.teacher);
+    if (directorFill) instructors.push('Center director');
+    const unresolvedHandoffs = [],
+      aiApplied = [];
+    const segments = ScheduleTakeovers.apply(appointments, {
+      sheet,
+      notes: handoffs.notes,
+      bounds,
+      heading,
+      timeColumns,
+      instructorForColor,
+      assessmentFills,
+      cell,
+      fill,
+      address,
+      key,
+      minutes,
+      clock,
+      instructors,
+      warnings,
+      unresolvedHandoffs,
+      aiApplied,
+      resolutions: options.handoffResolutions || [],
+    });
+    return { rows: segments, warnings, unresolvedHandoffs, aiApplied };
   }
   return { key, isHighSchool, readBinders, readSchedule, minutes };
 })();

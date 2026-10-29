@@ -6,8 +6,11 @@ export const root = resolve(dirname(fileURLToPath(import.meta.url)), '..');
 export const publicFiles = Object.freeze([
   'index.html',
   'src/styles.css',
+  'src/color-preferences.js',
+  'src/ai-fallback.js',
   'src/scheduler.js',
   'src/spreadsheet.js',
+  'src/takeovers.js',
   'src/spreadsheet-jobs.js',
   'src/spreadsheet-worker.js',
   '_headers',

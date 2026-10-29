@@ -1,5 +1,5 @@
 'use strict';
-importScripts('../vendor/xlsx.full.min.js', 'spreadsheet.js');
+importScripts('../vendor/xlsx.full.min.js', 'takeovers.js', 'spreadsheet.js');
 const MAX_FILE_BYTES = 5 * 1024 * 1024;
 function validateBook(book) {
   if (!book.SheetNames?.length) throw new Error('This workbook has no sheets.');
@@ -53,7 +53,7 @@ self.onmessage = async (event) => {
       validateBook(result);
     } else if (task.type === 'generate') {
       const roster = SpreadsheetParser.readBinders(task.binders);
-      result = SpreadsheetParser.readSchedule(task.schedule, roster);
+      result = SpreadsheetParser.readSchedule(task.schedule, roster, task.options);
       if (result.rows.length > 5000)
         throw new Error('This schedule exceeds the limit of 5,000 appointments.');
       const seen = new Set(),

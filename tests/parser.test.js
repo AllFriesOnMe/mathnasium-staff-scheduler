@@ -73,7 +73,7 @@ for (let r = 2; r <= 4; r++) {
 test('Merged blocks use start labels and default one-hour durations', () => {
   const p = P.readSchedule(schedule, roster);
   assert(p.rows[0].start === '15:30' && p.rows[0].end === '16:30');
-  assert(p.rows[1].end === '17:00');
+  assert(p.rows.find((row) => row.student === 'Ryan Clark').end === '17:00');
 });
 test('Repeated right-hand time column', () => {
   const p = P.readSchedule(schedule, roster);

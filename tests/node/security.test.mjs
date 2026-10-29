@@ -21,12 +21,12 @@ test('Build copies only approved files and removes stale student data', () => {
   assert.deepEqual(files, [...publicFiles].sort());
   assert.equal(existsSync(join(output, 'private-students.csv')), false);
 });
-test('Deployment has strict self-only scripts, workers, and no network API access', () => {
+test('Deployment allows only same-origin connections, scripts and workers', () => {
   const headers = readFileSync(join(root, '_headers'), 'utf8');
   for (const directive of [
     "script-src 'self'",
     "worker-src 'self'",
-    "connect-src 'none'",
+    "connect-src 'self'",
     "frame-ancestors 'none'",
     "form-action 'none'",
   ])
@@ -37,6 +37,7 @@ test('Deployment has strict self-only scripts, workers, and no network API acces
   for (const file of [
     'src/scheduler.js',
     'src/spreadsheet.js',
+    'src/takeovers.js',
     'src/spreadsheet-jobs.js',
     'src/spreadsheet-worker.js',
   ])
@@ -63,7 +64,7 @@ test('Production preview applies headers and rejects private paths', async () =>
     const page = await fetch(url);
     assert.equal(page.status, 200);
     assert.equal(page.headers.get('x-frame-options'), 'DENY');
-    assert.ok(page.headers.get('content-security-policy').includes("connect-src 'none'"));
+    assert.ok(page.headers.get('content-security-policy').includes("connect-src 'self'"));
     assert.equal(page.headers.get('x-content-type-options'), 'nosniff');
     for (const path of [
       '/tests/parser.html',
