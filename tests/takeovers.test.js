@@ -44,6 +44,16 @@ function takeoverFixture() {
 function takeoverRows(fixture) {
   return P.readSchedule(fixture.s, takeoverRoster);
 }
+
+test('Online flag follows a handoff and each instructor gets their own table', () => {
+  const f = takeoverFixture();
+  f.put('18:40', 1, 'Raya Holt OL', 'FCE5CD');
+  f.put('19:00', 4, 'Send Raya Holt to Abigail at 19:30', 'D5A6BD');
+  const p = takeoverRows(f);
+  assert(p.rows.length === 2 && p.rows.every((row) => row.online));
+  assert(p.rows.find((row) => row.staff === 'elizabeth').table === '3');
+  assert(p.rows.find((row) => row.staff === 'abigail').table === '5');
+});
 function assertRayaHandoff(p, time = '19:30', incoming = 'abigail') {
   const rows = p.rows.filter((r) => r.student === 'Raya Holt');
   assert(rows.length === 2, JSON.stringify(p));

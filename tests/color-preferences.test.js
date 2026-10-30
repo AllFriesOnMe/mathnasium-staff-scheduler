@@ -261,6 +261,7 @@ test('Named indicators override inferred teacher labels and keep separate colors
       p.rows.some((row) => row.staff === 'Lilianna K') &&
       p.rows.some((row) => row.staff === 'Yama'),
   );
+  assert(p.rows.find((row) => row.staff === 'Lilianna K').table === '1');
   assert(
     p.warnings.some(
       (w) =>

@@ -138,9 +138,12 @@ frame.onload = async () => {
     await w.generate();
     test('Generated staff list shows attention and physics', () =>
       assert(
-        d
-          .getElementById('staffLists')
-          .textContent.includes('Samara Adams (A1) [Needs attention; Physics]'),
+        d.getElementById('staffLists').textContent.includes('Samara Adams (A1) [Physics]') &&
+          d.querySelector('#staffLists strong.needs-attention')?.textContent === 'Samara Adams' &&
+          w
+            .getComputedStyle(d.querySelector('#staffLists strong.needs-attention'))
+            .textDecorationLine.includes('underline') &&
+          !d.getElementById('staffLists').textContent.includes('Needs attention'),
       ));
     d.getElementById('export').click();
     const noteCsv = await exportedBlob.text();
@@ -457,6 +460,7 @@ frame.onload = async () => {
     // SheetJS's writer omits styles; supply a styled sheet to the real worker
     // after upload so this exercises color parsing as well as browser opt-in.
     const colorGrid = ambiguousColorFixture();
+    colorGrid.B2.v = 'Samara A (OL)';
     await upload(
       'binders',
       book([
@@ -509,12 +513,18 @@ frame.onload = async () => {
             d.getElementById('staffLists').textContent.includes('ACD') &&
             d.getElementById('warningList').textContent.includes('uncertain shade'),
         ));
+      test('Rendered instructor headings include tables and students display online markers', () => {
+        const alex = [...d.querySelectorAll('#staffLists section')].find(
+          (section) => section.querySelector('h3').textContent === 'alex (Table 1)',
+        );
+        assert(alex && alex.textContent.includes('Samara Adams (online) (A1)'));
+      });
       d.getElementById('aiEnabled').click();
       d.getElementById('aiAccessCode').value = 'synthetic-center-code';
       await w.generate();
       test('AI color-only request updates the correct instructor without a handoff', () => {
         const section = [...d.querySelectorAll('#staffLists section')].find(
-          (section) => section.querySelector('h3').textContent === 'yama',
+          (section) => section.querySelector('h3').textContent === 'yama (Table 2)',
         );
         assert(
           colorCalls === 1 &&
@@ -529,6 +539,17 @@ frame.onload = async () => {
       });
       d.getElementById('export').click();
       const colorCsv = await exportedBlob.text();
+      test('CSV retains online labels and exports Table and Online columns', () => {
+        const workbook = XLSX.read(colorCsv, { type: 'string', raw: true });
+        const entries = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
+        const samara = entries.find((row) => row.Student === 'Samara Adams (online)');
+        assert(
+          samara &&
+            String(samara.Table) === '1' &&
+            samara.Online === 'Yes' &&
+            samara.Binder === 'A1',
+        );
+      });
       test('AI color labels are included in CSV output', () =>
         assert(
           colorCsv.includes('AI-assisted color assignment') && colorCsv.includes('Veer Shah'),

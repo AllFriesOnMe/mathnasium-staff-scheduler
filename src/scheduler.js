@@ -130,13 +130,7 @@ async function generate() {
         time = `${row.start} - ${row.end || 'END UNKNOWN'}${twoHours ? ' (2 hours)' : ''}`;
       const slot = JSON.stringify([time, twoHours ? index : null]);
       if (!slots.has(slot)) slots.set(slot, { time, students: [] });
-      slots
-        .get(slot)
-        .students.push(
-          row.student +
-            (row.binder ? ` (${row.binder})` : '') +
-            (row.notes?.length ? ` [${row.notes.join('; ')}]` : ''),
-        );
+      slots.get(slot).students.push(row);
     });
     $('staffLists').replaceChildren();
     groups.forEach((slots, staff) => {
@@ -145,10 +139,33 @@ async function generate() {
         list = document.createElement('ul');
       block.className = 'staff-block';
       list.className = 'staff-list';
-      h3.textContent = staff;
+      const tables = [
+        ...new Set(
+          rows
+            .filter((row) => row.staff === staff)
+            .flatMap((row) => String(row.table || '').split(/,\s*/))
+            .filter(Boolean),
+        ),
+      ].sort((a, b) => +a - +b);
+      h3.textContent = staff + (tables.length ? ` (Table ${tables.join(', ')})` : '');
       slots.forEach(({ students, time }) => {
         const li = document.createElement('li');
-        li.textContent = `${time}: ${students.join(', ')}`;
+        li.append(`${time}: `);
+        students.forEach((row, index) => {
+          if (index) li.append(', ');
+          const attention = (note) => /^needs?\s+attention$/i.test(note);
+          const needsAttention = row.notes?.some(attention);
+          const name = document.createElement(needsAttention ? 'strong' : 'span');
+          name.textContent = row.student;
+          if (needsAttention) name.className = 'needs-attention';
+          const notes = (row.notes || []).filter((note) => !attention(note));
+          li.append(
+            name,
+            (row.online ? ' (online)' : '') +
+              (row.binder ? ` (${row.binder})` : '') +
+              (notes.length ? ` [${notes.join('; ')}]` : ''),
+          );
+        });
         list.append(li);
       });
       block.append(h3, list);
@@ -180,15 +197,17 @@ async function generate() {
 }
 function download() {
   const cells = [
-    ['Staff', 'Start', 'End', 'Student', 'Binder', 'Notes', 'Duration'],
+    ['Staff', 'Start', 'End', 'Student', 'Binder', 'Notes', 'Duration', 'Table', 'Online'],
     ...exportedRows.map((r) => [
       r.staff,
       r.start,
       r.end || 'END UNKNOWN',
-      r.student,
+      r.student + (r.online ? ' (online)' : ''),
       r.binder,
       (r.notes || []).join('; '),
       durationOf(r) === 120 ? '2 hours' : `${durationOf(r)} minutes`,
+      r.table || '',
+      r.online ? 'Yes' : '',
     ]),
   ];
   const csv =

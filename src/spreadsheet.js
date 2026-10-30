@@ -8,6 +8,15 @@ const SpreadsheetParser = (() => {
       .trim()
       .replace(/\s+/g, ' ');
   const isHighSchool = (label) => /\bhs\s*\d*\b|\bhigh school\b/.test(key(label));
+  const isOnline = (value) => /\b(?:online|ol)\s*\d*\b/i.test(String(value ?? ''));
+  const withoutOnline = (value) =>
+    String(value ?? '')
+      .replace(/\b(?:online|ol)\b/gi, ' ')
+      .replace(/\(\s*\)|\[\s*\]/g, ' ')
+      .replace(/\s+/g, ' ')
+      .trim();
+  const onlineOnly = (value) =>
+    isOnline(value) && !withoutOnline(value).replace(/[\s()[\].,:;-]/g, '');
   const text = (cell) => String(cell?.v ?? '').trim();
   const address = (r, c) => XLSX.utils.encode_cell({ r, c });
   const cell = (sheet, r, c) => sheet[address(r, c)];
@@ -39,7 +48,8 @@ const SpreadsheetParser = (() => {
   function sessionNotes(values) {
     const combined = values.join(' '),
       notes = [];
-    if (/\bneeds?\s+attention\b|\battention\b/i.test(combined)) notes.push('Needs attention');
+    if (/\bneeds?\s+attention\b|\battention\b|\bna\b/i.test(combined))
+      notes.push('Needs attention');
     if (/\b(?:phy|physics)\b/i.test(combined)) notes.push('Physics');
     return notes;
   }
@@ -206,12 +216,15 @@ const SpreadsheetParser = (() => {
           end = minutes(rawEnd);
         if (!staff || !rawStudent || start === null || end === null || end <= start)
           throw new Error(`Row ${r + 1}: missing staff/student or invalid start/end times.`);
-        const match = matchName(rawStudent, roster);
+        const studentName = withoutOnline(rawStudent);
+        if (!studentName) throw new Error(`Row ${r + 1}: missing student name.`);
+        const match = matchName(studentName, roster);
         if (match?.abbreviated)
           warnings.push(`${rawStudent} matched uniquely to ${match.entry.name}.`);
         rows.push({
           staff: String(staff).trim(),
-          student: match?.entry.name || String(rawStudent).trim(),
+          student: match?.entry.name || studentName,
+          online: isOnline(rawStudent) || isOnline(staff),
           start: clock(start),
           end: clock(end),
         });
@@ -237,12 +250,19 @@ const SpreadsheetParser = (() => {
     const merges = sheet['!merges'] || [];
     const handoffs = ScheduleTakeovers.collect({ sheet, bounds, heading, cell, text, address });
     const ignoredNote =
-      /^(?:needs?\b|attention\b|table\s*\d|binder\b|cancel(?:led|ed)?\b|assess?ments?\b|g(?:r(?:ade)?)?\s*\d|adv\b|move\b|physics?\b|phy\b|\d)/i;
+      /^(?:needs?\b|attention\b|na\b|table\s*\d|binder\b|cancel(?:led|ed)?\b|assess?ments?\b|(?:ol|online)\b|g(?:r(?:ade)?)?\s*\d|adv\b|move\b|make\s*-?\s*up\b|last\s+one\b|additional\b|physics?\b|phy\b|\d)/i;
     const teacherCells = new Set(),
       assessmentCells = new Set(),
       assessmentFills = new Set(),
       spreadsheetAssessmentFills = new Set(),
-      instructorByFill = new Map();
+      instructorByFill = new Map(),
+      tableInstructorFills = new Set(),
+      tablesByTeacher = new Map();
+    function rememberTable(teacher, table) {
+      if (!table) return;
+      if (!tablesByTeacher.has(key(teacher))) tablesByTeacher.set(key(teacher), new Set());
+      tablesByTeacher.get(key(teacher)).add(table);
+    }
     const preferenceFill = (value) =>
       typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value)
         ? `rgb:${value.slice(1).toUpperCase()}`
@@ -289,10 +309,12 @@ const SpreadsheetParser = (() => {
         const teacher = text(cell(sheet, r - 1, c));
         if (!teacher || ignoredNote.test(teacher) || handoffs.noteCells.has(address(r - 1, c)))
           continue;
+        rememberTable(teacher, table[1]);
         teacherCells.add(address(r - 1, c));
         const color = fill(cell(sheet, r, c));
         if (!color) continue;
         const assignment = { teacher, table: table[1] };
+        tableInstructorFills.add(color);
         if (
           instructorByFill.has(color) &&
           key(instructorByFill.get(color)?.teacher) !== key(teacher)
@@ -319,6 +341,9 @@ const SpreadsheetParser = (() => {
           continue;
         teacherCells.add(address(r, c));
         if (!color) continue;
+        // Names explicitly above table labels outrank incidental lowercase text.
+        // Conflicting table labels still remain ambiguous from the first pass.
+        if (tableInstructorFills.has(color)) continue;
         if (!instructorByFill.has(color)) instructorByFill.set(color, { teacher: name, table: '' });
         else if (key(instructorByFill.get(color)?.teacher) !== key(name))
           instructorByFill.set(color, null);
@@ -359,7 +384,9 @@ const SpreadsheetParser = (() => {
     for (const [color, assignment] of namedColors) {
       if (!assignment || assignment.behavior === 'assessment') continue;
       assessmentFills.delete(color);
-      instructorByFill.set(color, { teacher: assignment.teacher, table: assignment.table });
+      const table = instructorByFill.get(color)?.table || '';
+      instructorByFill.set(color, { teacher: assignment.teacher, table });
+      rememberTable(assignment.teacher, table);
     }
     // Handoff wording names an instructor at a particular time. It must not
     // relabel every earlier booking that happens to share the note's color.
@@ -451,15 +478,16 @@ const SpreadsheetParser = (() => {
         )
           continue;
         const students = [],
+          onlineStudents = new Set(),
           nameWarnings = [];
         raw
           .split(/\r?\n|;/)
           .filter(Boolean)
           .forEach((rawValue) => {
             // Inline course notes describe the session, not part of a student's name.
-            const value = rawValue
+            const value = withoutOnline(rawValue)
               .replace(
-                /\s+(?:g(?:r(?:ade)?)?\s*\d+(?:\s+ap)?|physics?|phy|needs?\s+attention)\s*$/i,
+                /\s+(?:g(?:r(?:ade)?)?\s*\d+(?:\s+ap)?|physics?|phy|needs?\s+attention|na|\(na\)|\[na\])\s*$/i,
                 '',
               )
               .trim();
@@ -469,6 +497,7 @@ const SpreadsheetParser = (() => {
             const match = matchName(value, roster);
             if (match) {
               students.push(match.entry.name);
+              if (isOnline(rawValue)) onlineStudents.add(match.entry.name);
               if (match.abbreviated)
                 nameWarnings.push(
                   `${address(r, c)}: ${value} matched uniquely to ${match.entry.name}.`,
@@ -480,12 +509,33 @@ const SpreadsheetParser = (() => {
             ) {
               // High-school students need not have a binder. Keep their schedule name.
               students.push(value.trim());
+              if (isOnline(rawValue)) onlineStudents.add(value.trim());
             } else if (!ignoredNote.test(value) && !assessmentFills.has(fill(cell(sheet, r, c))))
               warnings.push(
                 `${address(r, c)} (${staff}): unmatched text "${value}" was not imported. It may be a student or a note.`,
               );
           });
-        if (students.length) starts.push({ r, students, nameWarnings });
+        if (students.length) {
+          if (raw.split(/\r?\n|;/).some(onlineOnly))
+            students.forEach((name) => onlineStudents.add(name));
+          starts.push({ r, students, nameWarnings, onlineStudents });
+        }
+      }
+      for (let r = heading + 1; r <= bounds.e.r; r++) {
+        if (
+          !isOnline(text(cell(sheet, r, c))) ||
+          starts.some((entry) => entry.r === r) ||
+          teacherCells.has(address(r, c)) ||
+          handoffs.noteCells.has(address(r, c))
+        )
+          continue;
+        const adjacent = starts.filter((entry) => Math.abs(entry.r - r) === 1);
+        if (adjacent.length === 1)
+          adjacent[0].students.forEach((name) => adjacent[0].onlineStudents.add(name));
+        else if (adjacent.length > 1)
+          warnings.push(
+            `${address(r, c)}: online marker is between two students; add OL to the intended student's name cell.`,
+          );
       }
       const consumedContinuations = new Set();
       starts.forEach((entry, index) => {
@@ -631,6 +681,7 @@ const SpreadsheetParser = (() => {
             table: assignment?.table || '',
             section: staff,
             student,
+            online: isOnline(staff) || entry.onlineStudents.has(student),
             start: clock(start),
             sessionStart: clock(start),
             sourceColumn: c,
@@ -673,6 +724,7 @@ const SpreadsheetParser = (() => {
         const original = appearances.get(row.sessionStart);
         original.notes = [...new Set([...original.notes, ...row.notes])];
         original.sources.push(...row.sources);
+        original.online ||= row.online;
         warnings.push(
           `Duplicate entry for ${row.student}, ${row.staff}, ${row.start}; kept one occurrence.`,
         );
@@ -693,6 +745,7 @@ const SpreadsheetParser = (() => {
         const notes = twoHours ? [...new Set([...row.notes, ...next.notes])] : row.notes;
         appointments.push({
           ...row,
+          online: row.online || (twoHours && next.online) || false,
           notes,
           durationMinutes,
           bookedDurationMinutes,
@@ -728,6 +781,10 @@ const SpreadsheetParser = (() => {
       aiApplied,
       resolutions: options.handoffResolutions || [],
     });
+    for (const row of segments) {
+      const tables = tablesByTeacher.get(key(row.staff));
+      row.table = tables?.size ? [...tables].sort((a, b) => +a - +b).join(', ') : row.table || '';
+    }
     return { rows: segments, warnings, unresolvedHandoffs, unresolvedColors, aiApplied };
   }
   return { key, isHighSchool, readBinders, readSchedule, minutes };

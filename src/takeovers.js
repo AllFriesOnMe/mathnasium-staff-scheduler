@@ -239,6 +239,7 @@ const ScheduleTakeovers = (() => {
         base.sources.push(...row.sources);
         base.namedEvents.push({ time: minutes(row.start), target: row.staff, explicit: false });
         base.notes = [...new Set([...base.notes, ...row.notes])];
+        base.online ||= row.online;
         if (adjacent && !prior) {
           base.end = row.end;
           base.durationMinutes = 120;
@@ -528,6 +529,7 @@ const ScheduleTakeovers = (() => {
         output.push({
           ...publicRow,
           staff: part.staff,
+          table: part.staff === base.staff ? base.table : '',
           start: clock(part.start),
           end: clock(part.end),
           durationMinutes: part.end - part.start,

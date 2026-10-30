@@ -1,5 +1,191 @@
 test('Find binder headers below title and blank rows', () =>
   assert(roster.get('samara adams').location === 'A1'));
+
+test('NA marks attention inline or below a student without becoming a student or instructor', () => {
+  for (const [name, annotation] of [
+    ['Samara A NA', ''],
+    ['Samara A (NA)', ''],
+    ['Samara A', 'NA'],
+    ['Samara A', 'na'],
+  ]) {
+    const p = P.readSchedule(
+      sheet([
+        ['Time', 'HS1'],
+        ['10:00', name],
+        ['10:05', annotation],
+        ['11:00', 'Ryan C'],
+      ]),
+      roster,
+    );
+    assert(
+      p.rows.length === 2 &&
+        p.rows[0].student === 'Samara Adams' &&
+        p.rows[0].notes.includes('Needs attention'),
+    );
+    assert(!p.rows[1].notes.includes('Needs attention'));
+    assert(!p.warnings.some((warning) => warning.includes('unmatched text')));
+  }
+});
+
+test('High-school make-up and additional notes cannot erase table-linked instructor assignments', () => {
+  const s = sheet([
+    ['Time', 'HS1', 'HS2'],
+    ['15:00', 'Student Alpha', 'Student Beta'],
+    ['15:05', 'tutor one', 'tutor two'],
+    ['15:10', 'table 7', 'table 1'],
+    ['15:15', 'make up', 'makeup'],
+    ['15:20', 'last one', 'additional'],
+    ['16:00', '', ''],
+  ]);
+  for (const [col, rgb] of [
+    ['B', '00FFFF'],
+    ['C', 'B4A7D6'],
+  ])
+    for (const r of [2, 3, 4, 5, 6]) s[`${col}${r}`].s = { patternType: 'solid', fgColor: { rgb } };
+  const p = P.readSchedule(s, new Map());
+  assert(
+    p.rows.length === 2 &&
+      p.rows.some((row) => row.staff === 'tutor one' && row.table === '7') &&
+      p.rows.some((row) => row.staff === 'tutor two' && row.table === '1'),
+  );
+  assert(
+    !p.warnings.some((warning) => /conflicting instructor|fell back|unmatched text/.test(warning)),
+  );
+});
+
+test('Unexpected lowercase text cannot replace an instructor explicitly linked to a table', () => {
+  const s = sheet([
+    ['Time', 'HS1'],
+    ['10:00', 'Student Alpha'],
+    ['10:05', 'tutor one'],
+    ['10:10', 'table 2'],
+    ['10:15', 'follow up'],
+    ['11:00', ''],
+  ]);
+  for (const a of ['B2', 'B3', 'B4', 'B5'])
+    s[a].s = { patternType: 'solid', fgColor: { rgb: '00FFFF' } };
+  const p = P.readSchedule(s, new Map());
+  assert(p.rows.length === 1 && p.rows[0].staff === 'tutor one');
+});
+
+test('Two different table-linked instructors sharing a color remain flagged as conflicting', () => {
+  const s = sheet([
+    ['Time', 'HS1', 'HS2'],
+    ['10:00', 'Student Alpha', 'Student Beta'],
+    ['10:05', 'tutor one', 'tutor two'],
+    ['10:10', 'table 1', 'table 2'],
+    ['11:00', '', ''],
+  ]);
+  for (const a of ['B2', 'B3', 'B4', 'C2', 'C3', 'C4'])
+    s[a].s = { patternType: 'solid', fgColor: { rgb: '00FFFF' } };
+  const p = P.readSchedule(s, new Map());
+  assert(
+    p.rows.every((row) => row.staff === 'ACD') &&
+      p.warnings.some((warning) => warning.includes('conflicting instructor labels')),
+  );
+});
+
+test('Online column headings and inline OL markers retain clean student names', () => {
+  for (const title of ['OL', 'OL1', 'Online 1', 'ONLINE']) {
+    const p = P.readSchedule(
+      sheet([
+        ['Time', title],
+        ['10:00', 'Samara A'],
+        ['11:00', ''],
+      ]),
+      roster,
+    );
+    assert(p.rows.length === 1 && p.rows[0].online && p.rows[0].student === 'Samara Adams');
+  }
+  for (const name of ['Samara A OL', 'Samara A (ONLINE)', 'OL Samara A', 'Samara A\nOL']) {
+    const p = P.readSchedule(
+      sheet([
+        ['Time', 'Alex'],
+        ['10:00', name],
+        ['11:00', ''],
+      ]),
+      roster,
+    );
+    assert(
+      p.rows.length === 1 && p.rows[0].online && p.rows[0].student === 'Samara Adams',
+      JSON.stringify(p),
+    );
+  }
+});
+
+test('OL annotations above and below apply only to their adjacent student', () => {
+  for (const rows of [
+    [
+      ['10:00', 'OL'],
+      ['10:05', 'Samara A'],
+      ['10:30', ''],
+      ['11:00', 'Ryan C'],
+    ],
+    [
+      ['10:00', 'Samara A'],
+      ['10:05', 'needs attention OL'],
+      ['10:30', ''],
+      ['11:00', 'Ryan C'],
+    ],
+  ]) {
+    const p = P.readSchedule(sheet([['Time', 'Alex'], ...rows]), roster);
+    assert(p.rows.find((row) => row.student === 'Samara Adams').online);
+    assert(!p.rows.find((row) => row.student === 'Ryan Clark').online);
+    assert(!p.warnings.some((w) => w.includes('unmatched text')));
+  }
+});
+
+test('Online annotations between adjacent students are flagged rather than marking both', () => {
+  const p = P.readSchedule(
+    sheet([
+      ['Time', 'Alex'],
+      ['10:00', 'Samara A'],
+      ['10:30', 'OL'],
+      ['11:00', 'Ryan C'],
+    ]),
+    roster,
+  );
+  assert(
+    p.rows.every((row) => !row.online) &&
+      p.warnings.some((w) => w.includes('online marker is between two students')),
+  );
+});
+
+test('Inline online marker in a shared cell does not mark the other student online', () => {
+  const p = P.readSchedule(
+    sheet([
+      ['Time', 'Alex'],
+      ['10:00', 'Samara A OL; Ryan C'],
+      ['11:00', ''],
+    ]),
+    roster,
+  );
+  assert(
+    p.rows.find((row) => row.student === 'Samara Adams').online &&
+      !p.rows.find((row) => row.student === 'Ryan Clark').online,
+  );
+});
+
+test('Online markers in flat schedules and two-hour repeats preserve matching and duration', () => {
+  const flat = P.readSchedule(
+    sheet([
+      ['Staff', 'Start', 'End', 'Student'],
+      ['Alex', '10:00', '11:00', 'Samara A (OL)'],
+    ]),
+    roster,
+  );
+  assert(flat.rows[0].student === 'Samara Adams' && flat.rows[0].online);
+  const grid = P.readSchedule(
+    sheet([
+      ['Time', 'Alex'],
+      ['10:00', 'Samara A'],
+      ['11:00', 'Samara A ONLINE'],
+      ['12:00', ''],
+    ]),
+    roster,
+  );
+  assert(grid.rows.length === 1 && grid.rows[0].online && grid.rows[0].durationMinutes === 120);
+});
 test('Separate binder row and column', () =>
   assert(
     P.readBinders(

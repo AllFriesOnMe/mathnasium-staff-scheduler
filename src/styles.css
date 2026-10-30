@@ -133,6 +133,10 @@ details {
 .staff-block {
   break-inside: avoid;
 }
+.needs-attention {
+  font-weight: 700;
+  text-decoration: underline;
+}
 [hidden] {
   display: none !important;
 }
