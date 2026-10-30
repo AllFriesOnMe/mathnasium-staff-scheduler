@@ -100,6 +100,20 @@ test('AI defaults off and requires every deployment credential', async () => {
     assert.equal((await handleRequest(request(), env, never)).status, 503);
   }
 });
+
+test('Deployment error identifies missing settings without exposing secret values', async () => {
+  const env = environment();
+  env.AI_ACCESS_TOKEN = 'short';
+  delete env.AI_RATE_LIMITER;
+  const response = await handleRequest(request(), env, never);
+  assert.equal(response.status, 503);
+  const { error } = await response.json();
+  assert.ok(
+    error.includes('AI_ACCESS_TOKEN at least 24 characters') &&
+      error.includes('AI_RATE_LIMITER binding'),
+  );
+  assert.ok(!error.includes('fake-provider-key') && !error.includes('short'));
+});
 test('AI route rejects foreign origins, invalid access codes, and excess requests', async () => {
   assert.equal(
     (

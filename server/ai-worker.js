@@ -240,15 +240,22 @@ export async function handleRequest(request, env, upstream = fetch) {
   if (!url.pathname.startsWith('/api/')) return env.ASSETS.fetch(request);
   if (url.pathname !== '/api/handoffs') return json({ error: 'Not found.' }, 404);
   if (request.method !== 'POST') return json({ error: 'Use POST.' }, 405);
-  if (
-    env.AI_ENABLED !== 'true' ||
-    !env.OPENAI_API_KEY ||
-    !env.OPENAI_MODEL ||
-    !env.AI_ACCESS_TOKEN ||
-    env.AI_ACCESS_TOKEN.length < 24 ||
-    !env.AI_RATE_LIMITER
-  )
-    return json({ error: 'AI fallback is not configured on this deployment.' }, 503);
+  const configurationIssues = [];
+  if (env.AI_ENABLED !== 'true') configurationIssues.push('set AI_ENABLED to true');
+  if (!env.OPENAI_API_KEY) configurationIssues.push('add the OPENAI_API_KEY secret');
+  if (!env.OPENAI_MODEL) configurationIssues.push('set OPENAI_MODEL');
+  if (!env.AI_ACCESS_TOKEN) configurationIssues.push('add the AI_ACCESS_TOKEN secret');
+  else if (env.AI_ACCESS_TOKEN.length < 24)
+    configurationIssues.push('make AI_ACCESS_TOKEN at least 24 characters long');
+  if (typeof env.AI_RATE_LIMITER?.limit !== 'function')
+    configurationIssues.push('deploy the AI_RATE_LIMITER binding from wrangler.jsonc');
+  if (configurationIssues.length)
+    return json(
+      {
+        error: `AI fallback is not configured on this deployment: ${configurationIssues.join('; ')}. Apply these settings to this Worker's runtime and deploy again.`,
+      },
+      503,
+    );
   if (request.headers.get('Origin') !== url.origin) return json({ error: 'Origin rejected.' }, 403);
   if (!(await authorized(request, env.AI_ACCESS_TOKEN)))
     return json({ error: 'Invalid AI access code.' }, 401);
