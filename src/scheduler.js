@@ -7,6 +7,15 @@ let generationController = null;
 let exportedRows = [];
 const durationOf = (row) =>
   row.durationMinutes ?? SpreadsheetParser.minutes(row.end) - SpreadsheetParser.minutes(row.start);
+function displayTime(value) {
+  const total = SpreadsheetParser.minutes(value);
+  if (total === null) return value;
+  const hour = Math.floor(total / 60);
+  return `${hour % 12 || 12}:${String(total % 60).padStart(2, '0')} ${hour < 12 ? 'AM' : 'PM'}`;
+}
+function displayNote(value) {
+  return String(value).replace(/\b(?:[01]\d|2[0-3]):[0-5]\d\b(?!\s*(?:am|pm)\b)/gi, displayTime);
+}
 function invalidate() {
   generationController?.abort();
   generationController = null;
@@ -109,7 +118,9 @@ async function generate() {
         if (controller.signal.aborted) return;
         messages.push('AI check unavailable: ' + error.message);
       }
-      $('aiStatus').textContent = [...(parsed.aiApplied || []), ...messages].join(' ');
+      $('aiStatus').textContent = [...(parsed.aiApplied || []), ...messages]
+        .map(displayNote)
+        .join(' ');
     }
     if (controller.signal.aborted) return;
     const rows = parsed.rows,
@@ -127,7 +138,7 @@ async function generate() {
       if (!groups.has(row.staff)) groups.set(row.staff, new Map());
       const twoHours = durationOf(row) === 120;
       const slots = groups.get(row.staff),
-        time = `${row.start} - ${row.end || 'END UNKNOWN'}${twoHours ? ' (2 hours)' : ''}`;
+        time = `${displayTime(row.start)} - ${row.end ? displayTime(row.end) : 'END UNKNOWN'}${twoHours ? ' (2 hours)' : ''}`;
       const slot = JSON.stringify([time, twoHours ? index : null]);
       if (!slots.has(slot)) slots.set(slot, { time, students: [] });
       slots.get(slot).students.push(row);
@@ -158,7 +169,7 @@ async function generate() {
           const name = document.createElement(needsAttention ? 'strong' : 'span');
           name.textContent = row.student;
           if (needsAttention) name.className = 'needs-attention';
-          const notes = (row.notes || []).filter((note) => !attention(note));
+          const notes = (row.notes || []).filter((note) => !attention(note)).map(displayNote);
           li.append(
             name,
             (row.online ? ' (online)' : '') +
@@ -200,11 +211,11 @@ function download() {
     ['Staff', 'Start', 'End', 'Student', 'Binder', 'Notes', 'Duration', 'Table', 'Online'],
     ...exportedRows.map((r) => [
       r.staff,
-      r.start,
-      r.end || 'END UNKNOWN',
+      displayTime(r.start),
+      r.end ? displayTime(r.end) : 'END UNKNOWN',
       r.student + (r.online ? ' (online)' : ''),
       r.binder,
-      (r.notes || []).join('; '),
+      (r.notes || []).map(displayNote).join('; '),
       durationOf(r) === 120 ? '2 hours' : `${durationOf(r)} minutes`,
       r.table || '',
       r.online ? 'Yes' : '',

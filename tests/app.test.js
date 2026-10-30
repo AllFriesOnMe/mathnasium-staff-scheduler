@@ -12,6 +12,15 @@ frame.onload = async () => {
   try {
     const d = frame.contentDocument,
       w = frame.contentWindow;
+    test('12-hour output handles midnight, noon, evening, and assessment notes', () => {
+      assert(
+        w.displayTime('00:00') === '12:00 AM' &&
+          w.displayTime('12:00') === '12:00 PM' &&
+          w.displayTime('19:30') === '7:30 PM',
+      );
+      assert(w.displayNote('Assessment: 11:45 - 12:00') === 'Assessment: 11:45 AM - 12:00 PM');
+      assert(w.displayNote('Handoff at 7:30 PM') === 'Handoff at 7:30 PM');
+    });
     const book = (...sheets) => {
       const b = XLSX.utils.book_new();
       sheets.forEach(([s, n]) => XLSX.utils.book_append_sheet(b, s, n));
@@ -112,7 +121,7 @@ frame.onload = async () => {
     test('High-school student without binder renders normally', () =>
       assert(
         !d.getElementById('results').hidden &&
-          d.getElementById('staffLists').textContent.includes('15:30 - 16:30: Arjun') &&
+          d.getElementById('staffLists').textContent.includes('3:30 PM - 4:30 PM: Arjun') &&
           !d.getElementById('staffLists').textContent.includes('Arjun (') &&
           d.getElementById('warnings').hidden,
       ));
@@ -125,7 +134,9 @@ frame.onload = async () => {
     d.getElementById('export').click();
     const csv = await exportedBlob.text();
     test('CSV leaves binder field blank for high-school student', () =>
-      assert(csv.includes('"HS1","15:30","16:30","Arjun",""') && !csv.includes('CHECK BINDER')));
+      assert(
+        csv.includes('"HS1","3:30 PM","4:30 PM","Arjun",""') && !csv.includes('CHECK BINDER'),
+      ));
     const marked = sheet([
       ['Time', 'IC 1'],
       ['10:00', 'Samara A'],
@@ -161,12 +172,12 @@ frame.onload = async () => {
     test('Two-hour sessions have a labeled timestamp and their own line', () =>
       assert(
         lines.length === 3 &&
-          lines.filter((t) => t.startsWith('10:00 - 12:00 (2 hours):')).length === 2 &&
+          lines.filter((t) => t.startsWith('10:00 AM - 12:00 PM (2 hours):')).length === 2 &&
           lines.some((t) => t.includes('Samara Adams') && !t.includes('Ryan Clark')) &&
           lines.some((t) => t.includes('Ryan Clark') && !t.includes('Samara Adams')),
       ));
     test('One-hour student remains separate from two-hour students', () =>
-      assert(lines.some((t) => t === '10:00 - 11:00: Veer Shah (E5)')));
+      assert(lines.some((t) => t === '10:00 AM - 11:00 AM: Veer Shah (E5)')));
     d.getElementById('export').click();
     const durationCsv = await exportedBlob.text();
     test('CSV exports explicit two-hour duration', () =>
@@ -214,14 +225,14 @@ frame.onload = async () => {
         staffSections.some(
           (section) =>
             section.querySelector('h3').textContent === 'Alex' &&
-            section.textContent.includes('10:00 - 10:45: Samara Adams (A1)') &&
-            section.textContent.includes('Handoff to Abigail at 10:45'),
+            section.textContent.includes('10:00 AM - 10:45 AM: Samara Adams (A1)') &&
+            section.textContent.includes('Handoff to Abigail at 10:45 AM'),
         ) &&
           staffSections.some(
             (section) =>
               section.querySelector('h3').textContent === 'Abigail' &&
-              section.textContent.includes('10:45 - 11:00: Samara Adams (A1)') &&
-              section.textContent.includes('Taking over from Alex at 10:45'),
+              section.textContent.includes('10:45 AM - 11:00 AM: Samara Adams (A1)') &&
+              section.textContent.includes('Taking over from Alex at 10:45 AM'),
           ),
       ));
     test('Normal handoff segments do not trigger an overlapping-booking warning', () =>
@@ -237,16 +248,16 @@ frame.onload = async () => {
         handoffRows.some(
           (row) =>
             row[0] === 'Alex' &&
-            row[1] === '10:00' &&
-            row[2] === '10:45' &&
+            row[1] === '10:00 AM' &&
+            row[2] === '10:45 AM' &&
             row[4] === 'A1' &&
             row[5].includes('Handoff to Abigail'),
         ) &&
           handoffRows.some(
             (row) =>
               row[0] === 'Abigail' &&
-              row[1] === '10:45' &&
-              row[2] === '11:00' &&
+              row[1] === '10:45 AM' &&
+              row[2] === '11:00 AM' &&
               row[4] === 'A1' &&
               row[5].includes('Taking over from Alex'),
           ),
