@@ -166,6 +166,21 @@ test('Chosen director color overrides instructor detection for that color', () =
   );
 });
 
+test('Cancellation during an assessment prefix cancels the whole booking', () => {
+  const s = sheet([
+    ['Time', 'HS1'],
+    ['10:00', 'Student Alpha'],
+    ['10:05', 'cancelled'],
+    ['10:15', ''],
+    ['10:20', 'tutor one'],
+    ['11:00', ''],
+  ]);
+  for (const a of ['B2', 'B3']) s[a].s = { patternType: 'solid', fgColor: { rgb: '00FF00' } };
+  for (const a of ['B4', 'B5']) s[a].s = { patternType: 'solid', fgColor: { rgb: 'C9DAF8' } };
+  const p = P.readSchedule(s, new Map(), { assessmentColor: '#00FF00' });
+  assert(!p.rows.length && p.warnings.some((warning) => warning.includes('marked cancelled')));
+});
+
 test('Unrecognized color warning identifies the cell, student, time, color and ACD fallback', () => {
   const s = sheet([
     ['Time', 'IC 1'],

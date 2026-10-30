@@ -1,6 +1,84 @@
 test('Find binder headers below title and blank rows', () =>
   assert(roster.get('samara adams').location === 'A1'));
 
+test('Stacked inline flags retain name matching and stay with their own student in a shared cell', () => {
+  const p = P.readSchedule(
+    sheet([
+      ['Time', 'Alex'],
+      ['10:00', 'Samara A NA phy OL; Ryan C'],
+      ['11:00', ''],
+    ]),
+    roster,
+  );
+  const samara = p.rows.find((row) => row.student === 'Samara Adams'),
+    ryan = p.rows.find((row) => row.student === 'Ryan Clark');
+  assert(
+    p.rows.length === 2 &&
+      samara.online &&
+      samara.notes.includes('Needs attention') &&
+      samara.notes.includes('Physics'),
+  );
+  assert(!ryan.online && !ryan.notes.length);
+});
+
+test('Inline cancellation removes only the named student in a shared cell', () => {
+  const p = P.readSchedule(
+    sheet([
+      ['Time', 'Alex'],
+      ['10:00', 'Samara A cancelled; Ryan C NA'],
+      ['11:00', ''],
+    ]),
+    roster,
+  );
+  assert(
+    p.rows.length === 1 &&
+      p.rows[0].student === 'Ryan Clark' &&
+      p.rows[0].notes.includes('Needs attention'),
+  );
+  assert(
+    p.warnings.some(
+      (warning) => warning.includes('Samara Adams') && warning.includes('marked cancelled'),
+    ),
+  );
+});
+
+test('Explicit not-cancelled notes do not cancel a booking or create an instructor', () => {
+  for (const [student, note] of [
+    ['Samara A not cancelled', ''],
+    ['Samara A', 'not cancelled'],
+    ['Samara A', 'no longer cancelled'],
+  ]) {
+    const p = P.readSchedule(
+      sheet([
+        ['Time', 'Alex'],
+        ['10:00', student],
+        ['10:05', note],
+        ['11:00', ''],
+      ]),
+      roster,
+    );
+    assert(
+      p.rows.length === 1 && p.rows[0].student === 'Samara Adams' && p.rows[0].staff === 'Alex',
+    );
+  }
+});
+
+test('Flat schedules normalize stacked flags without losing binder matching', () => {
+  const p = P.readSchedule(
+    sheet([
+      ['Staff', 'Start', 'End', 'Student'],
+      ['Alex', '10:00', '11:00', 'Samara A NA phy OL'],
+    ]),
+    roster,
+  );
+  assert(
+    p.rows[0].student === 'Samara Adams' &&
+      p.rows[0].online &&
+      p.rows[0].notes.includes('Needs attention') &&
+      p.rows[0].notes.includes('Physics'),
+  );
+});
+
 test('NA marks attention inline or below a student without becoming a student or instructor', () => {
   for (const [name, annotation] of [
     ['Samara A NA', ''],

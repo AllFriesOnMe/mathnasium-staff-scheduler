@@ -4,7 +4,11 @@ const ScheduleTakeovers = (() => {
   const actionPattern =
     /\b(?:take[\s-]*over|takes[\s-]*over|taking[\s-]*over|taken[\s-]*over|hand[\s-]*(?:over|off)|handover|handoff|send|transfer|pass)\b|\b(?:move|give)\b.+\bto\b|\b(?:goes|going|should go|will go)\s+to\b/i;
   const isNote = (value) => actionPattern.test(String(value));
-  const clean = (value) => String(value).replace(/[’‘]/g, "'").replace(/\s+/g, ' ').trim();
+  const clean = (value) =>
+    String(value)
+      .replace(/[\u2018\u2019]/g, "'")
+      .replace(/\s+/g, ' ')
+      .trim();
   const timePattern = /\b(?:(\d{1,2})[:.](\d{2})\s*([ap]\.?m\.?)?|(\d{1,2})\s*([ap]\.?m\.?))\b/gi;
   const withoutTime = (value) =>
     clean(value)
@@ -14,7 +18,7 @@ const ScheduleTakeovers = (() => {
       .trim();
   const looksLikeName = (value) =>
     /^[\p{L}][\p{L}\p{M}' .-]{0,70}$/u.test(value) &&
-    !/\b(?:students?|kids?|over|takes?|from|to|please|table|start|end|assessment|them|him|her|someone|another|starting|beginning|on)\b/i.test(
+    !/\b(?:students?|kids?|over|takes?|from|to|please|table|start|end|assessment|them|him|her|someone|another|starting|beginning|on|needs?|attention|physics?|phy|na|ol|online|additional|makeup)\b/i.test(
       value,
     );
 
@@ -29,6 +33,12 @@ const ScheduleTakeovers = (() => {
       subjects = '',
       match;
     if (
+      (match = body.match(
+        /^(?:send|transfer|move|pass|give|hand\s*over|handover|handoff)\s+(?:over\s+)?to\s+(.+)$/i,
+      ))
+    ) {
+      target = match[1];
+    } else if (
       (match = body.match(
         /^(?:send|transfer|move|pass|give|hand\s*over|handover|handoff)\s+(.+?)\s+(?:over\s+)?to\s+(.+)$/i,
       ))
@@ -91,7 +101,10 @@ const ScheduleTakeovers = (() => {
       for (let c = bounds.s.c; c <= bounds.e.c; c++) {
         if (noteCells.has(address(r, c))) continue;
         const raw = text(cell(sheet, r, c));
-        if (!isNote(raw)) continue;
+        const splitAction =
+          /^(?:take|takes|taking|hand)\s*$/i.test(raw) &&
+          /^over\s*$/i.test(text(cell(sheet, r + 1, c)));
+        if (!isNote(raw) && !splitAction) continue;
         const pieces = [raw];
         noteCells.add(address(r, c));
         const merge = merges.find((m) => m.s.r === r && m.s.c === c);
@@ -113,11 +126,15 @@ const ScheduleTakeovers = (() => {
           const needsObject = /^(?:take\s*over|hand\s*over|handover|handoff)\s*$/i.test(
             pieces.join(' '),
           );
+          const needsDestination = /\b(?:to|from)\s*$/i.test(pieces.join(' '));
+          const needsOver =
+            /^(?:take|takes|taking|hand)\s*$/i.test(pieces.join(' ')) && /^over$/i.test(value);
           if (
             !value ||
             !(
               /^(?:at\s*|@\s*)?\d{1,2}[:.]\d{2}(?:\s*[ap]\.?m\.?)?\s*$/i.test(value) ||
-              (needsObject && looksLikeName(value))
+              ((needsObject || needsDestination) && looksLikeName(value)) ||
+              needsOver
             )
           )
             break;
@@ -173,7 +190,7 @@ const ScheduleTakeovers = (() => {
       const matches = [...note.text.matchAll(timePattern)];
       const times = timesFor(note.c),
         rowTime = times.find((t) => t.r === note.r)?.time;
-      if (!matches.length) return /(?:\bat\b|@)\s*\d/.test(note.text) ? null : (rowTime ?? null);
+      if (!matches.length) return /(?:\bat\b|@)\s*\d/i.test(note.text) ? null : (rowTime ?? null);
       if (matches.length > 1) return null;
       const hour = matches[0][1] ?? matches[0][4],
         minute = matches[0][2] ?? '00',
@@ -190,12 +207,22 @@ const ScheduleTakeovers = (() => {
         : candidates[0];
     }
     const teacherRegistry = new Map();
-    for (const name of [
-      ...instructors,
-      ...notes.map((n) => incomingName(n.text)).filter(Boolean),
-      ...appointments.map((a) => a.staff),
-    ])
+    for (const name of [...instructors, ...appointments.map((a) => a.staff)])
       if (!teacherRegistry.has(key(name))) teacherRegistry.set(key(name), name);
+    for (const note of notes) {
+      const name = incomingName(note.text);
+      if (!name) continue;
+      const parts = key(name).split(' ');
+      const alreadyRepresented = [...teacherRegistry.values()].some((known) => {
+        const full = key(known).split(' ');
+        return (
+          full[0] === parts[0] &&
+          full.length >= parts.length &&
+          parts.slice(1).every((part, i) => full[i + 1].startsWith(part))
+        );
+      });
+      if (!alreadyRepresented) teacherRegistry.set(key(name), name);
+    }
     const teacherNames = [...teacherRegistry.values()];
     function resolveName(phrase, names, allowNew = false) {
       const wanted = key(phrase),
@@ -273,17 +300,36 @@ const ScheduleTakeovers = (() => {
         }
       }
     }
+    function acceptedEvents(base, reportConflicts = false) {
+      const byTime = new Map();
+      for (const event of events.get(base)) {
+        if (!byTime.has(event.time)) byTime.set(event.time, []);
+        byTime.get(event.time).push(event);
+      }
+      const accepted = [];
+      let hasExplicit = false;
+      for (const [time, list] of [...byTime].sort(([a], [b]) => a - b)) {
+        const explicit = list.filter((event) => event.explicit);
+        if (!explicit.length && hasExplicit) continue;
+        const targets = [
+          ...new Set((explicit.length ? explicit : list).map((event) => event.target)),
+        ];
+        if (targets.length > 1) {
+          if (reportConflicts)
+            warnings.push(
+              `Conflicting handoffs for ${base.student} at ${clock(time)}; that handoff was not applied.`,
+            );
+          continue;
+        }
+        accepted.push({ time, target: targets[0] });
+        if (explicit.length) hasExplicit = true;
+      }
+      return accepted;
+    }
     function staffAt(base, time) {
-      const explicit = events
-        .get(base)
-        .filter((e) => e.explicit && e.time <= time)
-        .sort((a, b) => a.time - b.time);
-      if (explicit.length) return explicit.at(-1).target;
       return (
-        events
-          .get(base)
-          .filter((e) => e.time <= time)
-          .sort((a, b) => a.time - b.time)
+        acceptedEvents(base)
+          .filter((event) => event.time <= time)
           .at(-1)?.target || base.staff
       );
     }
@@ -322,9 +368,60 @@ const ScheduleTakeovers = (() => {
         ? enclosing[0]
         : null;
     }
+    function pairedDestination(active, note) {
+      const targets = active.map((base) => [
+        ...new Set(
+          events
+            .get(base)
+            .filter(
+              (event) =>
+                event.explicit &&
+                event.namedTarget &&
+                event.time === note.time &&
+                event.noteCell !== address(note.r, note.c),
+            )
+            .map((event) => event.target),
+        ),
+      ]);
+      if (!targets.length || targets.some((list) => list.length !== 1)) return null;
+      return targets.every((list) => key(list[0]) === key(targets[0][0])) ? targets[0][0] : null;
+    }
+    function nearbySupports(note, teacher) {
+      const ownColor = fill(cell(sheet, note.r, note.c));
+      if (ownColor) return key(instructorForColor(ownColor)?.teacher || '') === key(teacher);
+      for (const [dr, dc] of [
+        [0, -1],
+        [0, 1],
+        [-1, 0],
+        [1, 0],
+      ]) {
+        for (let distance = 1; distance <= 4; distance++) {
+          const r = note.r + dr * distance,
+            c = note.c + dc * distance;
+          if (
+            r <= heading ||
+            r > bounds.e.r ||
+            c < bounds.s.c ||
+            c > bounds.e.c ||
+            timeColumns.includes(c)
+          )
+            break;
+          const color = fill(cell(sheet, r, c));
+          if (!color) continue;
+          if (key(instructorForColor(color)?.teacher || '') === key(teacher)) return true;
+          break;
+        }
+      }
+      return false;
+    }
     const timedNotes = notes
       .map((note) => ({ ...note, time: noteTime(note) }))
-      .sort((a, b) => (a.time ?? Infinity) - (b.time ?? Infinity));
+      .sort(
+        (a, b) =>
+          (a.time ?? Infinity) - (b.time ?? Infinity) ||
+          Number(Boolean(parseSentence(b.text)?.target)) -
+            Number(Boolean(parseSentence(a.text)?.target)),
+      );
     for (const note of timedNotes) {
       const warning = (reason) => {
         warnings.push(
@@ -358,7 +455,7 @@ const ScheduleTakeovers = (() => {
             .map((base, i) => ({
               id: `a${i}`,
               student: base.student,
-              staff: staffAt(base, note.time ?? minutes(base.start)),
+              staff: staffAt(base, (note.time ?? minutes(base.start)) - 0.5),
               start: base.start,
               end: base.end,
             }))
@@ -396,11 +493,25 @@ const ScheduleTakeovers = (() => {
         )
           return false;
         const parsed = parseSentence(note.text);
+        const paired = pairedDestination(selected, note);
+        if (paired && key(paired) !== key(target)) return false;
+        if (
+          parsed &&
+          !parsed.subjects &&
+          !parsed.source &&
+          selected.some(
+            (base) =>
+              !base.sources.some(
+                (source) => source.column >= note.c && source.column <= note.lastColumn,
+              ),
+          )
+        )
+          return false;
         if (parsed?.target && key(resolveName(parsed.target, teacherNames) || '') !== key(target))
           return false;
         if (parsed?.source) {
           const source = resolveName(parsed.source, teacherNames);
-          if (!source || selected.some((base) => key(staffAt(base, time)) !== key(source)))
+          if (!source || selected.some((base) => key(staffAt(base, time - 0.5)) !== key(source)))
             return false;
         }
         if (parsed?.subjects) {
@@ -420,7 +531,13 @@ const ScheduleTakeovers = (() => {
             return false;
         }
         for (const base of selected) {
-          events.get(base).push({ time, target, explicit: true });
+          events.get(base).push({
+            time,
+            target,
+            explicit: true,
+            namedTarget: Boolean(parsed?.target),
+            noteCell: address(note.r, note.c),
+          });
           base.notes.push('AI-assisted handoff');
         }
         aiApplied.push(
@@ -441,13 +558,6 @@ const ScheduleTakeovers = (() => {
         unresolved('sentence could not be resolved');
         continue;
       }
-      const target = sentence.target
-        ? resolveName(sentence.target, teacherNames, true)
-        : contextualInstructor(note);
-      if (!target) {
-        unresolved('incoming instructor is missing or ambiguous');
-        continue;
-      }
       let active = bases.filter(
         (base) => minutes(base.start) <= note.time && note.time < minutes(base.end),
       );
@@ -461,7 +571,7 @@ const ScheduleTakeovers = (() => {
           unresolved('outgoing instructor is missing or ambiguous');
           continue;
         }
-        active = active.filter((base) => key(staffAt(base, note.time)) === key(source));
+        active = active.filter((base) => key(staffAt(base, note.time - 0.5)) === key(source));
       }
       if (sentence.subjects) {
         const phrases = sentence.subjects.split(/\s*(?:,|&|\band\b|\+)\s*/i).filter(Boolean);
@@ -483,28 +593,40 @@ const ScheduleTakeovers = (() => {
         unresolved('no matching appointment is active at that time');
         continue;
       }
-      for (const base of active) events.get(base).push({ time: note.time, target, explicit: true });
+      const contextTeacher = contextualInstructor(note);
+      const paired = !sentence.target && sentence.subjects ? pairedDestination(active, note) : null;
+      if (paired && contextTeacher && key(paired) !== key(contextTeacher)) {
+        warning('sending and receiving notes disagree about the incoming instructor');
+        continue;
+      }
+      const target = sentence.target
+        ? resolveName(sentence.target, teacherNames, true)
+        : contextTeacher || (paired && nearbySupports(note, paired) ? paired : null);
+      if (!target) {
+        unresolved('incoming instructor is missing or ambiguous');
+        continue;
+      }
+      for (const base of active) {
+        if (
+          !events
+            .get(base)
+            .some(
+              (event) =>
+                event.explicit && event.time === note.time && key(event.target) === key(target),
+            )
+        )
+          events.get(base).push({
+            time: note.time,
+            target,
+            explicit: true,
+            namedTarget: Boolean(sentence.target),
+            noteCell: address(note.r, note.c),
+          });
+      }
     }
     const output = [];
     for (const base of bases) {
-      const all = events.get(base),
-        firstExplicit = Math.min(...all.filter((e) => e.explicit).map((e) => e.time));
-      const byTime = new Map();
-      for (const event of all.filter((e) => e.explicit || e.time < firstExplicit)) {
-        if (!byTime.has(event.time)) byTime.set(event.time, []);
-        byTime.get(event.time).push(event);
-      }
-      const accepted = [];
-      for (const [time, list] of [...byTime].sort(([a], [b]) => a - b)) {
-        const targets = [...new Set(list.map((e) => e.target))];
-        if (targets.length > 1) {
-          warnings.push(
-            `Conflicting handoffs for ${base.student} at ${clock(time)}; that handoff was not applied.`,
-          );
-          continue;
-        }
-        accepted.push({ time, target: targets[0] });
-      }
+      const accepted = acceptedEvents(base, true);
       let staff = base.staff,
         start = minutes(base.start),
         from = null;

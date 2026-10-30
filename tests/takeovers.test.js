@@ -178,6 +178,136 @@ test('Named send instruction splits both instructors without restarting the hour
   assertRayaHandoff(takeoverRows(f));
 });
 
+function pairedNotesFixture() {
+  const f = takeoverFixture();
+  f.put('18:40', 1, '', 'FCE5CD');
+  f.put('18:40', 3, 'Raya Holt', 'FCE5CD');
+  f.put('19:30', 1, '', 'D5A6BD');
+  f.put('19:30', 2, 'take', 'FFFFFF');
+  f.put('19:35', 2, 'over', 'FFFFFF');
+  f.put('19:40', 2, 'raya h', 'FFFFFF');
+  f.put('19:30', 3, 'move to abigail', 'FCE5CD');
+  return f;
+}
+
+test('Sending and receiving notes reconcile the same handoff even when the receiving note is read first', () => {
+  const p = takeoverRows(pairedNotesFixture());
+  assertRayaHandoff(p);
+  assert(
+    !p.unresolvedHandoffs.length &&
+      !p.warnings.some((warning) => warning.includes('handoff not applied')),
+  );
+  assert(p.rows[0].notes.filter((note) => note.includes('Handoff to')).length === 1);
+  assert(p.rows[1].notes.filter((note) => note.includes('Taking over from')).length === 1);
+});
+
+test('Paired notes cannot silently override a different clearly indicated receiving instructor', () => {
+  const f = pairedNotesFixture();
+  f.put('19:30', 2, 'take over Raya H', 'FCE5CD');
+  f.put('19:35', 2, '', 'FFFFFF');
+  f.put('19:40', 2, '', 'FFFFFF');
+  const p = takeoverRows(f);
+  assertRayaHandoff(p);
+  assert(p.warnings.some((warning) => warning.includes('sending and receiving notes disagree')));
+});
+
+test('Receiving note at another time is not paired with an earlier sending note', () => {
+  const f = pairedNotesFixture();
+  f.put('19:30', 2, 'take over Raya H at 19:35', 'FFFFFF');
+  f.put('19:35', 2, '', 'FFFFFF');
+  f.put('19:40', 2, '', 'FFFFFF');
+  const p = takeoverRows(f);
+  assertRayaHandoff(p);
+  assert(p.unresolvedHandoffs.some((note) => note.cell === `C${f.at('19:30') + 1}`));
+});
+
+test('Explicit outgoing instructor is checked before a simultaneous color change', () => {
+  const f = takeoverFixture();
+  for (const time of ['19:30', '19:35']) f.put(time, 1, '', 'D5A6BD');
+  f.put('19:00', 4, 'take over Raya Holt from elizabeth at 19:30', 'D5A6BD');
+  const p = takeoverRows(f);
+  assertRayaHandoff(p);
+  assert(
+    !p.unresolvedHandoffs.length &&
+      !p.warnings.some((warning) => warning.includes('handoff not applied')),
+  );
+});
+
+test('A handoff destination first name cannot hide two known instructors with that name', () => {
+  const f = takeoverFixture();
+  f.put('18:30', 5, 'alex smith', 'FCE5CD');
+  f.put('18:30', 6, 'alex jones', 'D5A6BD');
+  f.put('19:00', 4, 'send Raya Holt to Alex at 19:30', 'FFFFFF');
+  const p = takeoverRows(f);
+  assert(
+    p.rows.length === 1 &&
+      p.rows[0].staff === 'alex smith' &&
+      p.warnings.some((warning) => warning.includes('incoming instructor is missing or ambiguous')),
+  );
+});
+
+test('An abbreviated destination resolves to its unique full instructor name', () => {
+  const f = takeoverFixture();
+  f.put('18:30', 6, 'abigail smith', 'D5A6BD');
+  f.put('19:00', 4, 'send Raya Holt to Abigail at 19:30', 'D5A6BD');
+  assertRayaHandoff(takeoverRows(f), '19:30', 'abigail smith');
+});
+
+test('Conflicting explicit handoffs do not erase later independent color evidence', () => {
+  const f = takeoverFixture();
+  f.put('19:00', 3, 'send Raya Holt to abigail at 19:00', 'D5A6BD');
+  f.put('19:00', 4, 'send Raya Holt to Jordan at 19:00', '112233');
+  for (const time of ['19:15', '19:30', '19:35']) f.put(time, 1, '', 'D5A6BD');
+  const p = takeoverRows(f);
+  assertRayaHandoff(p, '19:15');
+  assert(p.warnings.some((warning) => warning.includes('Conflicting handoffs')));
+});
+
+test('Curly apostrophes in instructor-group handoffs are parsed', () => {
+  const f = takeoverFixture();
+  f.put('19:00', 4, 'abigail takes over elizabeth\u2019s students at 19:30', 'D5A6BD');
+  assertRayaHandoff(takeoverRows(f));
+});
+
+test('Note words are not invented as instructor names', () => {
+  const f = takeoverFixture();
+  f.put('19:00', 4, 'send Raya Holt to needs attention at 19:30', 'D5A6BD');
+  const p = takeoverRows(f);
+  assert(
+    p.rows.length === 1 &&
+      p.warnings.some((warning) => warning.includes('incoming instructor is missing or ambiguous')),
+  );
+});
+
+test('Move to plus instructor on the next row transfers only the active student in that lane', () => {
+  const f = takeoverFixture();
+  f.put('18:40', 2, 'Onna Kohut', 'FCE5CD');
+  f.put('19:30', 1, 'move to', 'D5A6BD');
+  f.put('19:35', 1, 'abigail', 'D5A6BD');
+  const p = takeoverRows(f);
+  assertRayaHandoff(p);
+  const other = p.rows.filter((row) => row.student === 'Onna Kohut');
+  assert(other.length === 1 && other[0].staff === 'elizabeth');
+  assert(
+    !p.unresolvedHandoffs.length &&
+      !p.warnings.some((warning) => warning.includes('handoff not applied')),
+  );
+});
+
+test('Move to instructor in one cell uses its lane and row time', () => {
+  const f = takeoverFixture();
+  f.put('19:30', 1, 'move to abigail', 'D5A6BD');
+  assertRayaHandoff(takeoverRows(f));
+});
+
+test('Take, over and student on separate rows are collected into one handoff note', () => {
+  const f = takeoverFixture();
+  f.put('19:00', 4, 'take', 'D5A6BD');
+  f.put('19:15', 4, 'over', 'D5A6BD');
+  f.put('19:30', 4, 'Raya Holt', 'D5A6BD');
+  assertRayaHandoff(takeoverRows(f), '19:00');
+});
+
 test('White note inside an instructor block inherits the matching colors on both sides', () => {
   for (const color of ['FFFFFF', undefined]) {
     const f = takeoverFixture();
@@ -403,10 +533,38 @@ test('Unresolved pronouns are not invented instructor names', () => {
 });
 
 test('An incomplete explicit time is flagged instead of using the note row', () => {
+  for (const suffix of ['at 7', 'AT 7']) {
+    const f = takeoverFixture();
+    f.put('19:00', 4, `send Raya Holt to Abigail ${suffix}`, 'D5A6BD');
+    const p = takeoverRows(f);
+    assert(
+      p.rows.length === 1 && p.warnings.some((w) => w.includes('time is missing or ambiguous')),
+    );
+  }
+});
+
+test('AI cannot apply a lane-only instruction to a student in another lane', () => {
   const f = takeoverFixture();
-  f.put('19:00', 4, 'send Raya Holt to Abigail at 7', 'D5A6BD');
-  const p = takeoverRows(f);
-  assert(p.rows.length === 1 && p.warnings.some((w) => w.includes('time is missing or ambiguous')));
+  f.put('19:30', 2, 'take over at 19:30', 'D5A6BD');
+  const initial = takeoverRows(f),
+    note = initial.unresolvedHandoffs[0];
+  const p = P.readSchedule(f.s, takeoverRoster, {
+    handoffResolutions: [
+      {
+        cell: note.cell,
+        text: note.text,
+        time: '19:30',
+        incomingInstructor: 'abigail',
+        studentIds: [note.appointments[0].id],
+      },
+    ],
+  });
+  assert(
+    p.rows.length === 1 &&
+      p.rows[0].staff === 'elizabeth' &&
+      !p.aiApplied.length &&
+      p.unresolvedHandoffs.length === 1,
+  );
 });
 
 test('Incoming names in handoff notes do not relabel earlier ACD bookings', () => {

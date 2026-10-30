@@ -53,6 +53,27 @@ const SpreadsheetParser = (() => {
     if (/\b(?:phy|physics)\b/i.test(combined)) notes.push('Physics');
     return notes;
   }
+  function isCancelled(value) {
+    return /\bcancel(?:led|ed)?\b/i.test(
+      String(value).replace(/\b(?:not|no longer|never|do not|don't)\s+cancel(?:led|ed)?\b/gi, ''),
+    );
+  }
+  function studentLabel(value) {
+    const original = withoutOnline(value);
+    let name = original,
+      previous;
+    do {
+      previous = name;
+      name = name
+        .replace(
+          /\s+(?:g(?:r(?:ade)?)?\s*\d+(?:\s+ap)?|physics?|phy|needs?\s+attention|na|\(na\)|\[na\]|\(?(?:(?:not|no longer|never|do not|don't)\s+)?cancel(?:led|ed)?\)?)\s*$/i,
+          '',
+        )
+        .trim();
+    } while (name !== previous);
+    const annotation = original.slice(name.length);
+    return { name, notes: sessionNotes([annotation]), cancelled: isCancelled(annotation) };
+  }
   const aliases = {
     student: ['student', 'student name', 'name', 'students'],
     binder: ['binder', 'binder location', 'binder position', 'location', 'position'],
@@ -216,8 +237,15 @@ const SpreadsheetParser = (() => {
           end = minutes(rawEnd);
         if (!staff || !rawStudent || start === null || end === null || end <= start)
           throw new Error(`Row ${r + 1}: missing staff/student or invalid start/end times.`);
-        const studentName = withoutOnline(rawStudent);
+        const label = studentLabel(rawStudent),
+          studentName = label.name;
         if (!studentName) throw new Error(`Row ${r + 1}: missing student name.`);
+        if (label.cancelled) {
+          warnings.push(
+            `Row ${r + 1}: ${studentName} omitted because the appointment is marked cancelled.`,
+          );
+          continue;
+        }
         const match = matchName(studentName, roster);
         if (match?.abbreviated)
           warnings.push(`${rawStudent} matched uniquely to ${match.entry.name}.`);
@@ -225,6 +253,7 @@ const SpreadsheetParser = (() => {
           staff: String(staff).trim(),
           student: match?.entry.name || studentName,
           online: isOnline(rawStudent) || isOnline(staff),
+          notes: label.notes,
           start: clock(start),
           end: clock(end),
         });
@@ -250,7 +279,7 @@ const SpreadsheetParser = (() => {
     const merges = sheet['!merges'] || [];
     const handoffs = ScheduleTakeovers.collect({ sheet, bounds, heading, cell, text, address });
     const ignoredNote =
-      /^(?:needs?\b|attention\b|na\b|table\s*\d|binder\b|cancel(?:led|ed)?\b|assess?ments?\b|(?:ol|online)\b|g(?:r(?:ade)?)?\s*\d|adv\b|move\b|make\s*-?\s*up\b|last\s+one\b|additional\b|physics?\b|phy\b|\d)/i;
+      /^(?:needs?\b|attention\b|na\b|table\s*\d|binder\b|(?:(?:not|no longer|never|do not|don't)\s+)?cancel(?:led|ed)?\b|assess?ments?\b|(?:ol|online)\b|g(?:r(?:ade)?)?\s*\d|adv\b|move\b|make\s*-?\s*up\b|last\s+one\b|additional\b|physics?\b|phy\b|\d)/i;
     const teacherCells = new Set(),
       assessmentCells = new Set(),
       assessmentFills = new Set(),
@@ -479,24 +508,26 @@ const SpreadsheetParser = (() => {
           continue;
         const students = [],
           onlineStudents = new Set(),
+          inlineNotes = new Map(),
+          cancelledStudents = new Set(),
+          sharedNotes = [],
           nameWarnings = [];
         raw
           .split(/\r?\n|;/)
           .filter(Boolean)
           .forEach((rawValue) => {
             // Inline course notes describe the session, not part of a student's name.
-            const value = withoutOnline(rawValue)
-              .replace(
-                /\s+(?:g(?:r(?:ade)?)?\s*\d+(?:\s+ap)?|physics?|phy|needs?\s+attention|na|\(na\)|\[na\])\s*$/i,
-                '',
-              )
-              .trim();
+            const label = studentLabel(rawValue),
+              value = label.name;
+            if (ignoredNote.test(value)) sharedNotes.push(rawValue);
             if (!value) return;
             if (ScheduleTakeovers.isNote(value)) return;
             if (lowercaseInstructor(value)) return;
             const match = matchName(value, roster);
             if (match) {
               students.push(match.entry.name);
+              inlineNotes.set(match.entry.name, label.notes);
+              if (label.cancelled) cancelledStudents.add(match.entry.name);
               if (isOnline(rawValue)) onlineStudents.add(match.entry.name);
               if (match.abbreviated)
                 nameWarnings.push(
@@ -509,6 +540,8 @@ const SpreadsheetParser = (() => {
             ) {
               // High-school students need not have a binder. Keep their schedule name.
               students.push(value.trim());
+              inlineNotes.set(value.trim(), label.notes);
+              if (label.cancelled) cancelledStudents.add(value.trim());
               if (isOnline(rawValue)) onlineStudents.add(value.trim());
             } else if (!ignoredNote.test(value) && !assessmentFills.has(fill(cell(sheet, r, c))))
               warnings.push(
@@ -518,7 +551,15 @@ const SpreadsheetParser = (() => {
         if (students.length) {
           if (raw.split(/\r?\n|;/).some(onlineOnly))
             students.forEach((name) => onlineStudents.add(name));
-          starts.push({ r, students, nameWarnings, onlineStudents });
+          starts.push({
+            r,
+            students,
+            nameWarnings,
+            onlineStudents,
+            inlineNotes,
+            cancelledStudents,
+            sharedNotes,
+          });
         }
       }
       for (let r = heading + 1; r <= bounds.e.r; r++) {
@@ -561,8 +602,14 @@ const SpreadsheetParser = (() => {
           return;
         }
         const students = entry.students.filter(
-          (student) => !consumedContinuations.has(`${entry.r}:${key(student)}`),
+          (student) =>
+            !consumedContinuations.has(`${entry.r}:${key(student)}`) &&
+            !entry.cancelledStudents.has(student),
         );
+        for (const student of entry.cancelledStudents)
+          warnings.push(
+            `${address(entry.r, c)}: ${student} omitted because the appointment is marked cancelled.`,
+          );
         if (!students.length) return;
         let teachingRow = entry.r;
         const hourEndRow =
@@ -647,11 +694,15 @@ const SpreadsheetParser = (() => {
         // student or the one-hour session boundary, regardless of fill shade.
         const noteEnd = Math.min(next ?? bounds.e.r + 1, hourEndRow);
         const notes = [];
-        for (let r = teachingRow; r < noteEnd; r++) {
-          if (!teacherCells.has(address(r, c)) && !assessmentFills.has(fill(cell(sheet, r, c))))
-            notes.push(text(cell(sheet, r, c)));
+        for (let r = entry.r; r < noteEnd; r++) {
+          if (!teacherCells.has(address(r, c)) && !handoffs.noteCells.has(address(r, c))) {
+            const studentEntry = starts.find((candidate) => candidate.r === r);
+            if (studentEntry) notes.push(...studentEntry.sharedNotes);
+            else notes.push(text(cell(sheet, r, c)));
+          }
         }
-        if (notes.some((note) => /\bcancel(?:led|ed)?\b/i.test(note))) {
+        notes.push(...entry.sharedNotes);
+        if (notes.some(isCancelled)) {
           warnings.push(
             `${address(entry.r, c)} (${staff}): ${entry.students.join(', ')} omitted because the block is marked cancelled.`,
           );
@@ -701,11 +752,16 @@ const SpreadsheetParser = (() => {
               },
             ],
             notes: [
-              ...sessionNotes(notes),
-              ...(aiColor ? ['AI-assisted color assignment'] : []),
-              ...(teachingStart > start
-                ? [`Assessment: ${clock(start)} - ${clock(teachingStart)}`]
-                : []),
+              ...new Set([
+                ...sessionNotes(notes),
+                ...starts
+                  .filter((candidate) => candidate.r >= entry.r && candidate.r <= teachingRow)
+                  .flatMap((candidate) => candidate.inlineNotes.get(student) || []),
+                ...(aiColor ? ['AI-assisted color assignment'] : []),
+                ...(teachingStart > start
+                  ? [`Assessment: ${clock(start)} - ${clock(teachingStart)}`]
+                  : []),
+              ]),
             ],
           }),
         );
