@@ -33,3 +33,6 @@ const roster = P.readBinders(
     ['Veer Shah', 'E5'],
   ]),
 );
+
+const testClock = (minutes) =>
+  String(Math.floor(minutes / 60)).padStart(2, '0') + ':' + String(minutes % 60).padStart(2, '0');

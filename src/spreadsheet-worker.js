@@ -54,13 +54,14 @@ self.onmessage = async (event) => {
     } else if (task.type === 'generate') {
       const roster = SpreadsheetParser.readBinders(task.binders);
       result = SpreadsheetParser.readSchedule(task.schedule, roster, task.options);
+      result.roster = [...roster];
       if (result.rows.length > 5000)
         throw new Error('This schedule exceeds the limit of 5,000 appointments.');
       const seen = new Set(),
         byStudent = new Map();
       result.rows.forEach((row) => {
         row.binder = roster.get(SpreadsheetParser.key(row.student))?.location || '';
-        if (!row.binder && !SpreadsheetParser.isHighSchool(row.section || row.staff))
+        if (!row.binder && !row.online && !SpreadsheetParser.isHighSchool(row.section || row.staff))
           result.warnings.push(`No binder location for ${row.student}.`);
         const id = JSON.stringify([row.staff, row.start, row.end, row.student]);
         if (seen.has(id))

@@ -36,6 +36,7 @@ test('Deployment allows only same-origin connections, scripts and workers', () =
   assert.ok(!/<style\b|<script\s*>|\son\w+\s*=/i.test(html));
   for (const file of [
     'src/scheduler.js',
+    'src/schedule-editor.js',
     'src/spreadsheet.js',
     'src/takeovers.js',
     'src/color-checks.js',

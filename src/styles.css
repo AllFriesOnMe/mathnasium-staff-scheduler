@@ -137,6 +137,87 @@ details {
   font-weight: 700;
   text-decoration: underline;
 }
+.staff-heading {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.staff-heading button,
+.student-controls button {
+  padding: 2px 7px;
+  font-size: 0.85rem;
+}
+.editable-student {
+  border-radius: 4px;
+  cursor: grab;
+}
+.editable-student:hover,
+.editable-student:focus-within {
+  background: #eef4f0;
+}
+.student-controls {
+  display: inline-flex;
+  gap: 3px;
+  width: 0;
+  overflow: hidden;
+  vertical-align: middle;
+  opacity: 0;
+}
+.editable-student:hover .student-controls,
+.editable-student:focus-within .student-controls {
+  width: auto;
+  margin-left: 5px;
+  opacity: 1;
+}
+.drop-target {
+  outline: 2px dashed #245b46;
+  background: #eef4f0;
+}
+.transfer-time {
+  padding: 0 4px;
+  font: inherit;
+  border-color: #bac8c0;
+  background: #f0f5f2;
+}
+.schedule-dialog {
+  width: min(520px, calc(100% - 40px));
+  max-height: 85vh;
+  overflow: auto;
+  border: 1px solid #ccc;
+  border-radius: 10px;
+  padding: 24px;
+}
+.schedule-dialog::backdrop {
+  background: #0006;
+}
+.schedule-dialog label {
+  margin: 10px 0;
+}
+.schedule-dialog input:not([type='checkbox']),
+.schedule-dialog textarea,
+.schedule-dialog select {
+  display: block;
+  width: 100%;
+  box-sizing: border-box;
+}
+.schedule-dialog textarea {
+  font: inherit;
+  padding: 7px;
+  resize: vertical;
+}
+.handoff-fields {
+  display: flex;
+  align-items: end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+@media (hover: none) {
+  .student-controls {
+    width: auto;
+    margin-left: 5px;
+    opacity: 1;
+  }
+}
 [hidden] {
   display: none !important;
 }
@@ -149,6 +230,18 @@ details {
   }
 }
 @media print {
+  .empty-staff {
+    display: none;
+  }
+  .transfer-time {
+    border: 0;
+    padding: 0;
+    background: transparent;
+    color: inherit;
+  }
+  .editable-student {
+    background: transparent;
+  }
   body {
     background: white;
     padding: 0;

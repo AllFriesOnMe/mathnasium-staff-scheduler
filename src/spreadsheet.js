@@ -66,7 +66,7 @@ const SpreadsheetParser = (() => {
       previous = name;
       name = name
         .replace(
-          /\s+(?:g(?:r(?:ade)?)?\s*\d+(?:\s+ap)?|physics?|phy|needs?\s+attention|na|\(na\)|\[na\]|\(?(?:(?:not|no longer|never|do not|don't)\s+)?cancel(?:led|ed)?\)?)\s*$/i,
+          /\s+(?:-\s*(?:[1-9]|1[0-2])|(?:[1-9]|1[0-2])|g(?:r(?:ade)?)?\s*\d+(?:\s+ap)?|physics?|phy|needs?\s+attention|na|\(na\)|\[na\]|\(?(?:(?:not|no longer|never|do not|don't)\s+)?cancel(?:led|ed)?\)?)\s*$/i,
           '',
         )
         .trim();
@@ -279,7 +279,7 @@ const SpreadsheetParser = (() => {
     const merges = sheet['!merges'] || [];
     const handoffs = ScheduleTakeovers.collect({ sheet, bounds, heading, cell, text, address });
     const ignoredNote =
-      /^(?:needs?\b|attention\b|na\b|table\s*\d|binder\b|(?:(?:not|no longer|never|do not|don't)\s+)?cancel(?:led|ed)?\b|assess?ments?\b|(?:ol|online)\b|g(?:r(?:ade)?)?\s*\d|adv\b|move\b|make\s*-?\s*up\b|last\s+one\b|additional\b|physics?\b|phy\b|\d)/i;
+      /^(?:needs?\b|attention\b|na\b|table\s*\d|binder\b|(?:(?:not|no longer|never|do not|don't)\s+)?cancel(?:led|ed)?\b|assess?ments?\b|(?:ol|online)\b|g(?:r(?:ade)?)?\s*\d|adv\b|move\b|make\s*-?\s*up\b|last\s+one\b|additional\b|wfh\b|school\s*\?|physics?\b|phy\b|\d)/i;
     const teacherCells = new Set(),
       assessmentCells = new Set(),
       assessmentFills = new Set(),
@@ -513,13 +513,20 @@ const SpreadsheetParser = (() => {
           sharedNotes = [],
           nameWarnings = [];
         raw
-          .split(/\r?\n|;/)
+          .split(isHighSchool(staff) ? /\r?\n|;|\// : /\r?\n|;/)
           .filter(Boolean)
           .forEach((rawValue) => {
             // Inline course notes describe the session, not part of a student's name.
             const label = studentLabel(rawValue),
               value = label.name;
             if (ignoredNote.test(value)) sharedNotes.push(rawValue);
+            if (/^(?:@|at\b)\s*\d{1,2}:\d{2}/i.test(value)) {
+              sharedNotes.push(rawValue);
+              warnings.push(
+                `${address(r, c)}: time annotation "${rawValue}" needs review; it does not override the schedule's time labels.`,
+              );
+              return;
+            }
             if (!value) return;
             if (ScheduleTakeovers.isNote(value)) return;
             if (lowercaseInstructor(value)) return;
@@ -534,11 +541,11 @@ const SpreadsheetParser = (() => {
                   `${address(r, c)}: ${value} matched uniquely to ${match.entry.name}.`,
                 );
             } else if (
-              isHighSchool(staff) &&
+              (isHighSchool(staff) || isOnline(staff) || isOnline(rawValue)) &&
               !ignoredNote.test(value) &&
               /^[\p{L}\p{M}][\p{L}\p{M}'’ .-]*$/u.test(value.trim())
             ) {
-              // High-school students need not have a binder. Keep their schedule name.
+              // Online and high-school students need not have a physical binder.
               students.push(value.trim());
               inlineNotes.set(value.trim(), label.notes);
               if (label.cancelled) cancelledStudents.add(value.trim());

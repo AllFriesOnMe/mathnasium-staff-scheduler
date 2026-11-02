@@ -843,3 +843,117 @@ test('Repeated student with different instructors remains separate', () => {
   );
   assert(p.rows.length === 2 && p.rows.every((r) => r.durationMinutes === 60));
 });
+
+test('Online students without binders and high-school grade and shared-name formats are retained', () => {
+  const p = P.readSchedule(
+    sheet([
+      ['Time', 'Online 1', 'HS 2'],
+      ['15:00', 'Drew Example', 'Taylor R - 10'],
+      ['16:00', 'Will Example', 'Arun/ Victor'],
+      ['17:00', '', 'Kyle 10'],
+      ['18:00', '', 'school?'],
+      ['19:00', '', 'WFH'],
+    ]),
+    roster,
+  );
+  assert(
+    p.rows.length === 6 &&
+      p.rows.some((r) => r.student === 'Taylor R') &&
+      p.rows.some((r) => r.student === 'Kyle') &&
+      p.rows.filter((r) => r.online).length === 2,
+  );
+  assert(!p.warnings.some((w) => /not imported|WFH/.test(w)));
+});
+test('A split transfer destination does not consume a numeric time column', () => {
+  const s = sheet([
+    ['Time', 'HS 1', 'Start Time'],
+    ['15:00', 'Taylor Example', 15 / 24],
+    ['15:15', 'transfer to', 15.25 / 24],
+    ['15:20', 'jordan', 15.3333333333 / 24],
+    ['16:00', '', 16 / 24],
+  ]);
+  const notes = ScheduleTakeovers.collect({
+    sheet: s,
+    bounds: XLSX.utils.decode_range(s['!ref']),
+    heading: 0,
+    cell: (s, r, c) => s[XLSX.utils.encode_cell({ r, c })],
+    text: (c) => String(c?.v ?? '').trim(),
+    address: (r, c) => XLSX.utils.encode_cell({ r, c }),
+  });
+  assert(
+    notes.notes.length === 1 &&
+      notes.notes[0].text === 'transfer to jordan' &&
+      !notes.noteCells.has('C3'),
+  );
+});
+
+for (const student of ['Samara Adams', 'Samara A', 'Samara A.', '  Samara   A  ']) {
+  for (const flags of [
+    'NA phy OL',
+    'OL NA phy',
+    'phy OL NA',
+    '(NA) ONLINE physics',
+    'physics [NA] OL',
+  ]) {
+    for (const separator of [';', '\n']) {
+      test('Student flag matrix: ' + JSON.stringify([student, flags, separator]), () => {
+        const p = P.readSchedule(
+          sheet([
+            ['Time', 'Alex'],
+            ['10:00', student + ' ' + flags + separator + 'Ryan C'],
+            ['11:00', ''],
+          ]),
+          roster,
+        );
+        const first = p.rows.find((r) => r.student === 'Samara Adams');
+        const other = p.rows.find((r) => r.student === 'Ryan Clark');
+        assert(
+          p.rows.length === 2 &&
+            first.online &&
+            first.notes.includes('Needs attention') &&
+            first.notes.includes('Physics'),
+        );
+        assert(!other.online && other.notes.length === 0);
+      });
+    }
+  }
+}
+for (const name of [
+  'Zo? Martin',
+  '?mile Dubois',
+  'Ava O?Connor',
+  'Noah Smith-Jones',
+  'Mary Jane Watson',
+]) {
+  for (const suffix of ['', ' NA', ' OL', ' phy']) {
+    test('Unicode and multipart exact names survive flags: ' + name + suffix, () => {
+      const names = P.readBinders(
+        sheet([
+          ['Student', 'Binder'],
+          [name, 'A1'],
+        ]),
+      );
+      const p = P.readSchedule(
+        sheet([
+          ['Time', 'Alex'],
+          ['10:00', name + suffix],
+        ]),
+        names,
+      );
+      assert(p.rows.length === 1 && p.rows[0].student === name);
+    });
+  }
+}
+for (const gap of [5, 15, 30, 55, 59, 61, 65, 90, 120]) {
+  test('Only exactly hourly repetitions create a two-hour booking: gap ' + gap, () => {
+    const p = P.readSchedule(
+      sheet([
+        ['Time', 'Alex'],
+        ['10:00', 'Samara A'],
+        [testClock(600 + gap), 'Samara A'],
+      ]),
+      roster,
+    );
+    assert(p.rows.length === 2 && p.rows.every((r) => r.bookedDurationMinutes !== 120));
+  });
+}

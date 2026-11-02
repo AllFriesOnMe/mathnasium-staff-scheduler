@@ -2,14 +2,16 @@
 
 const ScheduleTakeovers = (() => {
   const actionPattern =
-    /\b(?:take[\s-]*over|takes[\s-]*over|taking[\s-]*over|taken[\s-]*over|hand[\s-]*(?:over|off)|handover|handoff|send|transfer|pass)\b|\b(?:move|give)\b.+\bto\b|\b(?:goes|going|should go|will go)\s+to\b/i;
+    /\b(?:take[\s-]*over|takes[\s-]*over|taking[\s-]*over|taken[\s-]*over|hand[\s-]*(?:over|off)|handed\s+over|handover|handoff|send|transfers?|transferred|pass)\b|\b(?:move|give)\b.+\bto\b|\b(?:goes|going|should go|will go)\s+to\b/i;
   const isNote = (value) => actionPattern.test(String(value));
   const clean = (value) =>
     String(value)
       .replace(/[\u2018\u2019]/g, "'")
       .replace(/\s+/g, ' ')
       .trim();
-  const timePattern = /\b(?:(\d{1,2})[:.](\d{2})\s*([ap]\.?m\.?)?|(\d{1,2})\s*([ap]\.?m\.?))\b/gi;
+  const timePattern =
+    /\b(?:(\d{1,2})[:.](\d{2})(?::00)?\s*([ap]\.?m\.?)?|(\d{1,2})\s*([ap]\.?m\.?))\b/gi;
+  const timeOnly = /^(?:at\s*|@\s*)?\d{1,2}[:.]\d{2}(?::00)?(?:\s*[ap]\.?m\.?)?\s*$/i;
   const withoutTime = (value) =>
     clean(value)
       .replace(timePattern, '')
@@ -23,7 +25,7 @@ const ScheduleTakeovers = (() => {
     );
 
   function parseSentence(text) {
-    let body = withoutTime(text)
+    let body = withoutTime(clean(text).replace(/\s+please[.!]?$/i, ''))
       .replace(/\b(take|takes|taking|taken)-over\b/gi, '$1 over')
       .replace(/\bhand[\s-]+off\b/gi, 'handoff')
       .replace(/^please\s+/i, '')
@@ -114,6 +116,8 @@ const ScheduleTakeovers = (() => {
           const value = text(cell(sheet, r, cc));
           if (
             !value ||
+            typeof cell(sheet, r, cc)?.v === 'number' ||
+            (/\b(?:to|from)\s*$/i.test(pieces.join(' ')) && !looksLikeName(withoutTime(value))) ||
             !(/\b(?:to|from)\s*$/i.test(pieces.join(' ')) || /^(?:to|from|at|@)\b/i.test(value))
           )
             break;
@@ -132,7 +136,7 @@ const ScheduleTakeovers = (() => {
           if (
             !value ||
             !(
-              /^(?:at\s*|@\s*)?\d{1,2}[:.]\d{2}(?:\s*[ap]\.?m\.?)?\s*$/i.test(value) ||
+              timeOnly.test(value) ||
               ((needsObject || needsDestination) && looksLikeName(value)) ||
               needsOver
             )
@@ -140,6 +144,14 @@ const ScheduleTakeovers = (() => {
             break;
           pieces.push(value);
           noteCells.add(address(rr, c));
+        }
+        // A time-only annotation immediately above belongs to this instruction.
+        // Append it so the action remains at the start of the parsed sentence.
+        const above = address(r - 1, c);
+        const precedingTime = text(cell(sheet, r - 1, c));
+        if (r - 1 > heading && !noteCells.has(above) && timeOnly.test(precedingTime)) {
+          pieces.push(precedingTime);
+          noteCells.add(above);
         }
         notes.push({ r, c, lastColumn, text: clean(pieces.join(' ')).slice(0, 2000) });
       }
@@ -196,7 +208,63 @@ const ScheduleTakeovers = (() => {
         minute = matches[0][2] ?? '00',
         suffix = matches[0][3] ?? matches[0][5];
       if (+minute > 59 || +hour > 23) return null;
-      if (suffix) return minutes(`${hour}:${minute} ${suffix.replaceAll('.', '')}`);
+      if (suffix) {
+        const explicit = minutes(`${hour}:${minute} ${suffix.replaceAll('.', '')}`);
+        const lane = appointments.filter(
+          (appointment) =>
+            appointment.sources.some(
+              (source) => source.column >= note.c && source.column <= note.lastColumn,
+            ) &&
+            rowTime !== undefined &&
+            minutes(appointment.start) <= rowTime &&
+            rowTime < minutes(appointment.end),
+        );
+        if (
+          lane.length &&
+          !lane.some(
+            (appointment) =>
+              minutes(appointment.start) <= explicit && explicit < minutes(appointment.end),
+          )
+        ) {
+          const target = parseSentence(note.text)?.target;
+          const label = `Transfer${target ? ` to ${target}` : ''} at ${hour}:${minute} ${suffix.replaceAll('.', '').toUpperCase()} (May be incorrect input)`;
+          // Bases have already been built; retain this visible note on the output too.
+          for (const base of bases) {
+            if (
+              lane.some(
+                (appointment) =>
+                  key(appointment.student) === key(base.student) &&
+                  base.sources.some(
+                    (source) => source.column >= note.c && source.column <= note.lastColumn,
+                  ),
+              )
+            ) {
+              base.notes = [...new Set([...base.notes, label])];
+              // A contradictory written time must not silently fall back to a
+              // color boundary elsewhere in this same appointment.
+              events.set(
+                base,
+                events
+                  .get(base)
+                  .filter(
+                    (event) =>
+                      event.explicit ||
+                      !lane.some(
+                        (appointment) =>
+                          minutes(appointment.start) <= event.time &&
+                          event.time < minutes(appointment.end),
+                      ),
+                  ),
+              );
+            }
+          }
+          warnings.push(
+            `${address(note.r, note.c)}: ${label}; transfer time is outside the student's appointment.`,
+          );
+          return null;
+        }
+        return explicit;
+      }
       if (+hour > 12 || +hour === 0) return +hour * 60 + +minute;
       const candidates = [(+hour % 12) * 60 + +minute, (+hour % 12) * 60 + +minute + 720];
       const reference = rowTime ?? times[0]?.time;

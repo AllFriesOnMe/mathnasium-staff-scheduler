@@ -593,3 +593,144 @@ test('Incoming names in handoff notes do not relabel earlier ACD bookings', () =
     );
   }
 });
+
+test('Transfer time above the action overrides the row and supports Excel seconds', () => {
+  const f = takeoverFixture();
+  f.put('18:45', 1, '@ 7:15:00 PM', 'FCE5CD');
+  f.put('19:00', 1, 'transfer to', 'FCE5CD');
+  f.put('19:15', 1, 'abigail', 'FCE5CD');
+  const p = takeoverRows(f);
+  assertRayaHandoff(p, '19:15');
+  assert(!p.warnings.some((w) => /time annotation/.test(w)));
+});
+test('Contradictory AM transfer time stays visible beside an incorrect-input label', () => {
+  const f = takeoverFixture();
+  f.put('18:45', 1, '@ 7:15:00 AM', 'FCE5CD');
+  f.put('19:00', 1, 'transfer to', 'FCE5CD');
+  f.put('19:15', 1, 'abigail', 'FCE5CD');
+  f.put('19:30', 1, 'Raya Holt', 'D5A6BD');
+  const p = takeoverRows(f);
+  const rows = p.rows.filter((r) => r.student === 'Raya Holt');
+  assert(rows.length === 1 && rows[0].staff === 'elizabeth');
+  assert(rows[0].notes.includes('Transfer to abigail at 7:15 AM (May be incorrect input)'));
+  assert(p.unresolvedHandoffs.length === 1);
+});
+
+// Cross-product tests exercise times that have no corresponding grid row.
+for (const minute of [41, 44, 49, 53, 58, 61, 67, 73, 79, 89, 97]) {
+  const total = 18 * 60 + minute;
+  const time = testClock(total);
+  const pm = (Math.floor(total / 60) % 12) + ':' + String(total % 60).padStart(2, '0') + ' PM';
+  for (const written of [time, pm, pm.replace(' PM', ':00 PM')]) {
+    for (const sentence of [
+      'Send Raya Holt to Abigail at TIME',
+      'Transfer Raya Holt to Abigail at TIME',
+      'Move Raya Holt to Abigail at TIME',
+      'Pass Raya Holt to Abigail at TIME',
+      'Give Raya Holt to Abigail at TIME',
+      'Hand over Raya Holt to Abigail at TIME',
+      'Raya Holt goes to Abigail at TIME',
+      'Raya Holt is transferred to Abigail at TIME',
+      'Abigail takes over Raya Holt at TIME',
+      'Take over Raya Holt from Elizabeth to Abigail at TIME',
+      'Please send Raya Holt to Abigail at TIME please',
+    ]) {
+      test('Handoff matrix: ' + sentence.replace('TIME', written), () => {
+        const f = takeoverFixture();
+        f.put('19:00', 4, sentence.replace('TIME', written), 'D5A6BD');
+        const p = takeoverRows(f);
+        assertRayaHandoff(p, time);
+        assert(p.unresolvedHandoffs.length === 0);
+      });
+    }
+  }
+}
+for (const written of [
+  '25:15',
+  '19:75',
+  '0:15 PM',
+  '13:15 PM',
+  '19:',
+  '19:15 and 19:30',
+  '19:15:30',
+  '19:15:99',
+]) {
+  test('Invalid or multiple transfer times cannot alter a booking: ' + written, () => {
+    const f = takeoverFixture();
+    f.put('19:00', 4, 'Send Raya Holt to Abigail at ' + written, 'D5A6BD');
+    const p = takeoverRows(f);
+    assert(p.rows.length === 1 && p.rows[0].staff === 'elizabeth');
+    assert(p.unresolvedHandoffs.length === 1);
+  });
+}
+
+for (const location of ['above', 'below', 'same cell']) {
+  for (const time of ['19:17', '7:17 PM', '7:17:00 PM']) {
+    test('Split transfer annotation matrix: ' + location + ' ' + time, () => {
+      const f = takeoverFixture();
+      f.put(
+        '19:00',
+        1,
+        'transfer to abigail' + (location === 'same cell' ? ' at ' + time : ''),
+        'FCE5CD',
+      );
+      if (location !== 'same cell')
+        f.put(location === 'above' ? '18:45' : '19:15', 1, '@ ' + time, 'FCE5CD');
+      assertRayaHandoff(takeoverRows(f), '19:17');
+    });
+  }
+}
+for (const text of [
+  'Do not send Raya Holt to Abigail at 19:30',
+  'Never transfer Raya Holt to Abigail at 19:30',
+  'Send Raya Holt to someone at 19:30',
+  'Send Raya Holt to another at 19:30',
+  'Send Raya Holt to needs attention at 19:30',
+  'Send Raya Holt to table 5 at 19:30',
+  'Send Unknown Student to Abigail at 19:30',
+  'Send Raya to Abigail at 19:30',
+]) {
+  test('Unsafe or ambiguous handoff cannot silently change staff: ' + text, () => {
+    const f = takeoverFixture();
+    if (text.includes('Send Raya to')) f.put('18:40', 2, 'Raya Hughes', 'FCE5CD');
+    f.put('19:00', 4, text, 'D5A6BD');
+    const p = takeoverRows(f);
+    assert(p.rows.every((r) => r.staff === 'elizabeth') && p.unresolvedHandoffs.length === 1);
+  });
+}
+for (const offset of [0, 1, 3]) {
+  for (const numeric of [false, true]) {
+    test(
+      'XLSX round-trip preserves explicit staff and shifted time columns: ' +
+        offset +
+        '/' +
+        numeric,
+      () => {
+        const f = takeoverFixture();
+        f.put('19:00', 1, 'Send Raya Holt to Abigail at 19:17', 'FCE5CD');
+        // SheetJS writes values, but does not preserve custom fill styles.
+        f.s.B1.v = 'elizabeth';
+        f.s.E1.v = 'abigail';
+        const shifted = {};
+        for (const [address, cell] of Object.entries(f.s)) {
+          if (address.startsWith('!')) continue;
+          const pos = XLSX.utils.decode_cell(address);
+          let copy = { ...cell };
+          if (numeric && pos.c === 0 && pos.r > 0)
+            copy = { ...cell, t: 'n', v: P.minutes(cell.v) / 1440, z: 'h:mm' };
+          shifted[XLSX.utils.encode_cell({ r: pos.r + offset, c: pos.c + offset })] = copy;
+        }
+        const bounds = XLSX.utils.decode_range(f.s['!ref']);
+        shifted['!ref'] = XLSX.utils.encode_range({
+          s: { r: 0, c: 0 },
+          e: { r: bounds.e.r + offset, c: bounds.e.c + offset },
+        });
+        const book = XLSX.utils.book_new();
+        XLSX.utils.book_append_sheet(book, shifted, 'Schedule');
+        const bytes = XLSX.write(book, { type: 'array', bookType: 'xlsx', cellStyles: true });
+        const restored = XLSX.read(bytes, { type: 'array', cellStyles: true, sheetStubs: true });
+        assertRayaHandoff(P.readSchedule(restored.Sheets.Schedule, takeoverRoster), '19:17');
+      },
+    );
+  }
+}

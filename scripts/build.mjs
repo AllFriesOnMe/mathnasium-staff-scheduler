@@ -9,6 +9,7 @@ export const publicFiles = Object.freeze([
   'src/color-preferences.js',
   'src/ai-fallback.js',
   'src/scheduler.js',
+  'src/schedule-editor.js',
   'src/spreadsheet.js',
   'src/takeovers.js',
   'src/color-checks.js',

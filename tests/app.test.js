@@ -168,7 +168,11 @@ frame.onload = async () => {
     ]);
     await upload('schedule', book([extended, 'Two hours']));
     await w.generate();
-    const lines = [...d.querySelectorAll('#staffLists li')].map((li) => li.textContent);
+    const lines = [...d.querySelectorAll('#staffLists li')].map((li) => {
+      const content = li.cloneNode(true);
+      content.querySelectorAll('.student-controls').forEach((controls) => controls.remove());
+      return content.textContent;
+    });
     test('Two-hour sessions have a labeled timestamp and their own line', () =>
       assert(
         lines.length === 3 &&
@@ -528,7 +532,10 @@ frame.onload = async () => {
         const alex = [...d.querySelectorAll('#staffLists section')].find(
           (section) => section.querySelector('h3').textContent === 'alex (Table 1)',
         );
-        assert(alex && alex.textContent.includes('Samara Adams (online) (A1)'));
+        assert(alex && alex.textContent.includes('Samara Adams (ONLINE) (A1)'));
+        assert(
+          [...alex.querySelectorAll('strong')].some((label) => label.textContent === '(ONLINE)'),
+        );
       });
       d.getElementById('aiEnabled').click();
       d.getElementById('aiAccessCode').value = 'synthetic-center-code';
@@ -553,7 +560,7 @@ frame.onload = async () => {
       test('CSV retains online labels and exports Table and Online columns', () => {
         const workbook = XLSX.read(colorCsv, { type: 'string', raw: true });
         const entries = XLSX.utils.sheet_to_json(workbook.Sheets[workbook.SheetNames[0]]);
-        const samara = entries.find((row) => row.Student === 'Samara Adams (online)');
+        const samara = entries.find((row) => row.Student === 'Samara Adams (ONLINE)');
         assert(
           samara &&
             String(samara.Table) === '1' &&
@@ -578,6 +585,120 @@ frame.onload = async () => {
       w.Worker = colorWorker;
       if (d.getElementById('aiEnabled').checked) d.getElementById('aiEnabled').click();
     }
+    await upload(
+      'schedule',
+      book([
+        sheet([
+          ['Time', 'Alex', 'Jordan'],
+          ['10:00', 'Samara A', 'Ryan C'],
+          ['11:00', '', ''],
+        ]),
+        'Manual edits',
+      ]),
+    );
+    await w.generate();
+    const findStaff = (staff) =>
+      [...d.querySelectorAll('#staffLists section')].find(
+        (section) => section.querySelector('h3').textContent === staff,
+      );
+    const clickButton = (parent, text) =>
+      [...parent.querySelectorAll('button')].find((button) => button.textContent === text).click();
+    clickButton(findStaff('Alex'), 'Add student');
+    let editor = d.querySelector('dialog');
+    editor.querySelector('[name="studentname"]').value = 'Veer Shah';
+    editor.querySelector('[name="starttime"]').value = '12:00';
+    editor.querySelector('[name="starttime"]').dispatchEvent(new w.Event('change'));
+    test('Add student defaults to one hour and supplies binder suggestions', () => {
+      assert(editor.querySelector('[name="endtime"]').value === '13:00');
+      assert(
+        [...editor.querySelectorAll('datalist option')].some(
+          (option) => option.value === 'Veer Shah',
+        ),
+      );
+    });
+    editor.querySelector('[name="online"]').checked = true;
+    editor.querySelector('[name="additionallabels"]').value = 'Physics; New binder';
+    clickButton(editor, 'Add handoff');
+    editor.querySelector('[name="handoffStaff"]').value = 'Jordan';
+    editor.querySelector('[name="handoffTime"]').value = '12:25';
+    editor.querySelector('form').requestSubmit();
+    test('Manual add appears on both instructors with binder and online status', () => {
+      assert(
+        findStaff('Alex').textContent.includes('12:00 PM - 12:25 PM: Veer Shah (ONLINE) (E5)'),
+      );
+      assert(
+        findStaff('Jordan').textContent.includes('12:25 PM - 1:00 PM: Veer Shah (ONLINE) (E5)'),
+      );
+    });
+    test('Additional labels appear on both instructors and prefill the edit form', () => {
+      assert(findStaff('Alex').textContent.includes('Physics; New binder'));
+      assert(findStaff('Jordan').textContent.includes('Physics; New binder'));
+    });
+    findStaff('Alex').querySelector('.transfer-time').click();
+    editor = d.querySelector('dialog');
+    test('Additional labels can be changed in the edit prompt', () => {
+      assert(editor.querySelector('[name="additionallabels"]').value === 'Physics\nNew binder');
+      editor.querySelector('[name="additionallabels"]').value = 'Bring workbook';
+    });
+    editor.querySelector('[name="handoffTime"]').value = '13:15';
+    editor.querySelector('form').requestSubmit();
+    test('Out-of-range handoff input keeps the dialog open and existing schedule intact', () => {
+      assert(
+        editor.open &&
+          editor.querySelector('[role="alert"]').textContent.includes('strictly inside'),
+      );
+      assert(findStaff('Jordan').textContent.includes('12:25 PM'));
+    });
+    editor.querySelector('[name="handoffTime"]').value = '12:17';
+    editor.querySelector('form').requestSubmit();
+    test('Clicking the transfer box adjusts both schedules', () => {
+      assert(findStaff('Alex').textContent.includes('12:00 PM - 12:17 PM'));
+      assert(findStaff('Jordan').textContent.includes('12:17 PM - 1:00 PM'));
+      assert(!d.getElementById('staffLists').textContent.includes('12:25 PM'));
+      assert(findStaff('Alex').textContent.includes('Bring workbook'));
+      assert(findStaff('Jordan').textContent.includes('Bring workbook'));
+      assert(!d.getElementById('staffLists').textContent.includes('New binder'));
+    });
+    const dragged = [...findStaff('Alex').querySelectorAll('.editable-student')].find((node) =>
+      node.textContent.includes('Veer Shah'),
+    );
+    const dragData = new w.DataTransfer();
+    dragged.dispatchEvent(new w.DragEvent('dragstart', { bubbles: true, dataTransfer: dragData }));
+    findStaff('Jordan').dispatchEvent(
+      new w.DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: dragData }),
+    );
+    test('Drag and drop moves a portion and merges adjacent portions for the same instructor', () => {
+      assert(!findStaff('Alex').textContent.includes('Veer Shah'));
+      assert(findStaff('Jordan').textContent.includes('12:00 PM - 1:00 PM: Veer Shah'));
+      assert(!findStaff('Jordan').querySelector('.transfer-time'));
+    });
+    clickButton(d.getElementById('editToolbar'), 'Undo last edit');
+    test('Undo restores both sides of a transfer after drag', () =>
+      assert(findStaff('Alex').textContent.includes('12:17 PM')));
+    d.getElementById('export').click();
+    const editedCsv = await exportedBlob.text();
+    test('CSV reflects manually adjusted handoff times', () =>
+      assert(editedCsv.includes('12:17 PM') && !editedCsv.includes('12:25 PM')));
+    test('CSV includes edited additional labels', () =>
+      assert(editedCsv.includes('Bring workbook') && !editedCsv.includes('New binder')));
+    const removeStudent = [...findStaff('Alex').querySelectorAll('.editable-student')].find(
+      (node) => node.textContent.includes('Veer Shah'),
+    );
+    removeStudent.querySelector('[aria-label^="Remove "]').click();
+    test('Remove deletes a student from all involved instructors', () =>
+      assert(!d.getElementById('staffLists').textContent.includes('Veer Shah')));
+    clickButton(d.getElementById('editToolbar'), 'Undo last edit');
+    test('Undo restores a removed student and handoffs', () =>
+      assert(findStaff('Jordan').textContent.includes('Veer Shah')));
+    await w.generate();
+    test('Regenerating clears manual edits and undo history', () => {
+      assert(!d.getElementById('staffLists').textContent.includes('Veer Shah'));
+      assert(
+        [...d.getElementById('editToolbar').querySelectorAll('button')].find(
+          (button) => button.textContent === 'Undo last edit',
+        ).disabled,
+      );
+    });
   } catch (error) {
     failures.push('Browser integration: ' + error.message);
   }
