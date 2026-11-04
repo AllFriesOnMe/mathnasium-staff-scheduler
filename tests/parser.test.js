@@ -146,7 +146,7 @@ test('Unexpected lowercase text cannot replace an instructor explicitly linked t
   assert(p.rows.length === 1 && p.rows[0].staff === 'tutor one');
 });
 
-test('Two different table-linked instructors sharing a color remain flagged as conflicting', () => {
+test('Shared colors retain each labeled instructor and warn about identical colors', () => {
   const s = sheet([
     ['Time', 'HS1', 'HS2'],
     ['10:00', 'Student Alpha', 'Student Beta'],
@@ -158,8 +158,13 @@ test('Two different table-linked instructors sharing a color remain flagged as c
     s[a].s = { patternType: 'solid', fgColor: { rgb: '00FFFF' } };
   const p = P.readSchedule(s, new Map());
   assert(
-    p.rows.every((row) => row.staff === 'ACD') &&
-      p.warnings.some((warning) => warning.includes('conflicting instructor labels')),
+    p.rows.some(
+      (row) => row.student === 'Student Alpha' && row.staff === 'tutor one' && row.table === '1',
+    ) &&
+      p.rows.some(
+        (row) => row.student === 'Student Beta' && row.staff === 'tutor two' && row.table === '2',
+      ) &&
+      p.warnings.some((warning) => warning.includes('colors are identical')),
   );
 });
 
@@ -1052,4 +1057,85 @@ test('A table switch inside a two-hour booking does not restart its session cloc
         r.notes.some((n) => n.startsWith('Part of 2-hour appointment')),
     ),
   );
+});
+
+function sharedInstructorColors(rows) {
+  const s = sheet(rows),
+    bounds = XLSX.utils.decode_range(s['!ref']);
+  for (let r = 1; r <= bounds.e.r; r++)
+    for (let c = 1; c <= bounds.e.c; c++) {
+      const a = XLSX.utils.encode_cell({ r, c });
+      s[a] = { ...(s[a] || { t: 'z' }), s: { patternType: 'solid', fgColor: { rgb: '00FFFF' } } };
+    }
+  return s;
+}
+test('Shared instructor color can be reused later without changing earlier students', () => {
+  const s = sharedInstructorColors([
+    ['Time', 'IC 1'],
+    ['10:00', 'Samara A'],
+    ['10:05', 'alex'],
+    ['10:10', 'table 1'],
+    ['11:00', 'Ryan C'],
+    ['11:05', 'jordan'],
+    ['11:10', 'table 2'],
+    ['12:00', ''],
+  ]);
+  const p = P.readSchedule(s, roster);
+  assert(
+    p.rows.length === 2 &&
+      p.rows[0].staff === 'alex' &&
+      p.rows[0].table === '1' &&
+      p.rows[1].staff === 'jordan' &&
+      p.rows[1].table === '2',
+  );
+  assert(p.warnings.some((w) => w.includes('colors are identical')));
+});
+test('Equally close shared-color labels leave only the ambiguous lane unassigned', () => {
+  const s = sharedInstructorColors([
+    ['Time', 'IC 1', 'IC 2', 'IC 3'],
+    ['10:00', 'Samara A', 'Ryan C', 'Veer S'],
+    ['10:05', 'alex', '', 'jordan'],
+    ['10:10', 'table 1', '', 'table 2'],
+    ['11:00', '', '', ''],
+  ]);
+  const p = P.readSchedule(s, roster);
+  assert(p.rows.find((r) => r.student === 'Samara Adams').staff === 'alex');
+  assert(p.rows.find((r) => r.student === 'Veer Shah').staff === 'jordan');
+  assert(p.rows.find((r) => r.student === 'Ryan Clark').staff === 'ACD');
+  assert(p.warnings.some((w) => w.includes('fell back')));
+});
+test('Manual color override retains priority over shared-color local instructor labels', () => {
+  const s = sharedInstructorColors([
+    ['Time', 'IC 1', 'IC 2'],
+    ['10:00', 'Samara A', 'Ryan C'],
+    ['10:05', 'alex', 'jordan'],
+    ['10:10', 'table 1', 'table 2'],
+    ['11:00', '', ''],
+  ]);
+  const p = P.readSchedule(s, roster, {
+    colorIndicators: [{ name: 'Manual Tutor', color: '#00FFFF', behavior: 'instructor' }],
+  });
+  assert(p.rows.every((r) => r.staff === 'Manual Tutor'));
+  assert(p.warnings.some((w) => w.includes('Manual color override')));
+});
+test('Explicit handoffs work between instructors sharing the same color', () => {
+  const s = sharedInstructorColors([
+    ['Time', 'IC 1', 'IC 2'],
+    ['10:00', 'Samara A', 'Ryan C'],
+    ['10:05', 'alex', 'jordan'],
+    ['10:10', 'table 1', 'table 2'],
+    ['10:30', 'transfer to jordan', ''],
+    ['11:00', '', ''],
+  ]);
+  const p = P.readSchedule(s, roster),
+    student = p.rows.filter((r) => r.student === 'Samara Adams');
+  assert(
+    student.length === 2 &&
+      student[0].staff === 'alex' &&
+      student[0].end === '10:30' &&
+      student[1].staff === 'jordan' &&
+      student[1].start === '10:30',
+  );
+  assert(student[0].table === '1' && student[1].table === '2');
+  assert(p.unresolvedHandoffs.length === 0);
 });

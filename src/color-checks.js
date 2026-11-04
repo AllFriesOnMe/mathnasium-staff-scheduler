@@ -32,7 +32,7 @@ const ScheduleColorChecks = (() => {
           cell: address(rr, cc),
           text: String(entry?.v ?? '').slice(0, 200),
           color: shade,
-          instructor: instructorForColor(shade)?.teacher || null,
+          instructor: instructorForColor(shade, rr, cc)?.teacher || null,
           time: times.get(rr) ?? null,
         });
       }

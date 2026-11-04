@@ -285,6 +285,7 @@ const SpreadsheetParser = (() => {
       assessmentFills = new Set(),
       spreadsheetAssessmentFills = new Set(),
       instructorByFill = new Map(),
+      instructorAnchors = [],
       tableInstructorFills = new Set(),
       tableMarkers = [];
     const preferenceFill = (value) =>
@@ -342,6 +343,7 @@ const SpreadsheetParser = (() => {
         const color = fill(cell(sheet, r, c));
         if (!color) continue;
         const assignment = { teacher, table: table[1] };
+        instructorAnchors.push({ ...assignment, color, r: r - 1, c });
         tableInstructorFills.add(color);
         if (
           instructorByFill.has(color) &&
@@ -372,10 +374,37 @@ const SpreadsheetParser = (() => {
         // Names explicitly above table labels outrank incidental lowercase text.
         // Conflicting table labels still remain ambiguous from the first pass.
         if (tableInstructorFills.has(color)) continue;
+        instructorAnchors.push({ teacher: name, table: '', color, r, c });
         if (!instructorByFill.has(color)) instructorByFill.set(color, { teacher: name, table: '' });
         else if (key(instructorByFill.get(color)?.teacher) !== key(name))
           instructorByFill.set(color, null);
       }
+    }
+    for (const anchor of instructorAnchors) {
+      for (let r = anchor.r - 1; r > heading; r--) {
+        const value = text(cell(sheet, r, anchor.c));
+        if (!value) continue;
+        if (
+          matchName(studentLabel(value).name, roster) ||
+          (!ignoredNote.test(value) && !ScheduleTakeovers.isNote(value) && /^\p{Lu}/u.test(value))
+        )
+          anchor.r = r;
+        break;
+      }
+    }
+    const sharedColors = new Set(instructorAnchors.map((anchor) => anchor.color));
+    for (const color of sharedColors) {
+      const names = [
+        ...new Map(
+          instructorAnchors
+            .filter((anchor) => anchor.color === color)
+            .map((anchor) => [key(anchor.teacher), anchor.teacher]),
+        ).values(),
+      ];
+      if (names.length > 1)
+        warnings.push(
+          `Color ${color.replace(/^rgb:/, '#')} is shared by ${names.join(', ')}; assignments follow nearby instructor labels. Verify these blocks because their colors are identical.`,
+        );
     }
     // Device preferences deliberately override inferred workbook color labels.
     const manualAssignments = new Map(namedColors);
@@ -417,11 +446,37 @@ const SpreadsheetParser = (() => {
     }
     // Handoff wording names an instructor at a particular time. It must not
     // relabel every earlier booking that happens to share the note's color.
-    function instructorForColor(color) {
+    function instructorForColor(color, r, c) {
       if (!color || assessmentFills.has(color)) return null;
       if (color === directorFill) return { teacher: 'Center director', table: '' };
       // Explicit labels always win, even when two instructors use nearby shades.
-      if (instructorByFill.has(color)) return instructorByFill.get(color);
+      if (instructorByFill.has(color)) {
+        const assignment = instructorByFill.get(color);
+        if (assignment || r === undefined || c === undefined) return assignment;
+        const byColumn = new Map();
+        for (const anchor of instructorAnchors.filter((anchor) => anchor.color === color)) {
+          if (!byColumn.has(anchor.c)) byColumn.set(anchor.c, []);
+          byColumn.get(anchor.c).push(anchor);
+        }
+        const candidates = [];
+        for (const [column, anchors] of byColumn) {
+          anchors.sort((a, b) => a.r - b.r);
+          const active = anchors.filter((anchor) => anchor.r <= r);
+          const chosen = active.length ? active.at(-1) : anchors[0];
+          const peers = anchors.filter((anchor) => anchor.r === chosen.r);
+          const blocked = Array.from({ length: Math.abs(column - c) + 1 }, (_, offset) =>
+            fill(cell(sheet, r, Math.min(column, c) + offset)),
+          ).some((shade) => shade && shade !== color);
+          if (!blocked)
+            candidates.push(
+              ...peers.map((anchor) => ({ ...anchor, distance: Math.abs(column - c) })),
+            );
+        }
+        candidates.sort((a, b) => a.distance - b.distance);
+        const nearest = candidates.filter((anchor) => anchor.distance === candidates[0]?.distance);
+        if (new Set(nearest.map((anchor) => key(anchor.teacher))).size !== 1) return null;
+        return { teacher: nearest[0].teacher, table: nearest[0].table };
+      }
       const candidates = [...instructorByFill].map(([knownColor, assignment]) => ({
         assignment,
         distance: colorDistance(color, knownColor),
@@ -454,7 +509,7 @@ const SpreadsheetParser = (() => {
         const table = text(cell(sheet, r, c)).match(/^table\s*(\d+)$/i);
         if (!table) continue;
         const color = fill(cell(sheet, r, c));
-        const teacher = instructorForColor(color)?.teacher;
+        const teacher = instructorForColor(color, r, c)?.teacher;
         if (!teacher) continue;
         const hasInstructor = teacherCells.has(address(r - 1, c));
         let anchor = hasInstructor ? r - 1 : r;
@@ -697,7 +752,7 @@ const SpreadsheetParser = (() => {
         }
         const next = starts.find((candidate) => candidate.r > teachingRow)?.r;
         const color = fill(cell(sheet, teachingRow, c));
-        let assignment = instructorForColor(color);
+        let assignment = instructorForColor(color, teachingRow, c);
         let aiColor = false;
         let colorCase = null;
         if (color && !assignment && !instructorByFill.has(color) && !manualAssignments.has(color)) {
@@ -860,6 +915,7 @@ const SpreadsheetParser = (() => {
     const instructors = [...instructorByFill.values()]
       .filter(Boolean)
       .map((assignment) => assignment.teacher);
+    instructors.push(...instructorAnchors.map((anchor) => anchor.teacher));
     if (directorFill) instructors.push('Center director');
     const unresolvedHandoffs = [],
       aiApplied = [...colorApplied];

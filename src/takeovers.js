@@ -361,7 +361,7 @@ const ScheduleTakeovers = (() => {
           if (source.stopRow !== null && r >= source.stopRow) break;
           const color = fill(cell(sheet, r, source.column));
           if (!color || assessmentFills.has(color)) continue;
-          const assignment = instructorForColor(color);
+          const assignment = instructorForColor(color, r, source.column);
           if (!assignment || assignment.teacher === previous) continue;
           if (time > minutes(base.start))
             events.get(base).push({ time, target: assignment.teacher, explicit: false });
@@ -406,7 +406,7 @@ const ScheduleTakeovers = (() => {
       const ownColor = fill(cell(sheet, note.r, note.c));
       // A colored note is authoritative. Do not bypass an ambiguous shade or
       // assessment block by borrowing another instructor's nearby color.
-      if (ownColor) return instructorForColor(ownColor)?.teacher;
+      if (ownColor) return instructorForColor(ownColor, note.r, note.c)?.teacher;
       function neighbor(dr, dc) {
         for (let distance = 1; distance <= 4; distance++) {
           const r = note.r + dr * distance,
@@ -421,7 +421,7 @@ const ScheduleTakeovers = (() => {
             return null;
           const color = fill(cell(sheet, r, c));
           // Stop at the first colored cell, including unknown/assessment fills.
-          if (color) return instructorForColor(color)?.teacher || null;
+          if (color) return instructorForColor(color, r, c)?.teacher || null;
         }
         return null;
       }
@@ -457,7 +457,8 @@ const ScheduleTakeovers = (() => {
     }
     function nearbySupports(note, teacher) {
       const ownColor = fill(cell(sheet, note.r, note.c));
-      if (ownColor) return key(instructorForColor(ownColor)?.teacher || '') === key(teacher);
+      if (ownColor)
+        return key(instructorForColor(ownColor, note.r, note.c)?.teacher || '') === key(teacher);
       for (const [dr, dc] of [
         [0, -1],
         [0, 1],
@@ -477,7 +478,7 @@ const ScheduleTakeovers = (() => {
             break;
           const color = fill(cell(sheet, r, c));
           if (!color) continue;
-          if (key(instructorForColor(color)?.teacher || '') === key(teacher)) return true;
+          if (key(instructorForColor(color, r, c)?.teacher || '') === key(teacher)) return true;
           break;
         }
       }
@@ -514,7 +515,7 @@ const ScheduleTakeovers = (() => {
               cell: address(r, c),
               text: String(entry?.v ?? '').slice(0, 200),
               color,
-              instructor: instructorForColor(color)?.teacher || null,
+              instructor: instructorForColor(color, r, c)?.teacher || null,
               time: timesFor(c).find((t) => t.r === r)?.time ?? null,
             });
           }
