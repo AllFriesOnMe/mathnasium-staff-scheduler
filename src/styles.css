@@ -139,8 +139,34 @@ details {
 }
 .staff-heading {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 12px;
+}
+.table-group {
+  margin: 12px 0 16px 12px;
+  padding-left: 12px;
+  border-left: 2px solid #dce5df;
+}
+.table-group h4 {
+  margin: 0 0 6px;
+  font-size: 1rem;
+}
+.table-heading {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  margin-bottom: 6px;
+}
+.table-heading h4 {
+  margin-bottom: 0;
+}
+.table-heading button {
+  padding: 2px 7px;
+  font-size: 0.85rem;
+}
+.table-group .staff-list {
+  margin-top: 0;
 }
 .staff-heading button,
 .student-controls button {

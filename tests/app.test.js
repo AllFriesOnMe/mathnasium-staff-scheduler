@@ -528,11 +528,15 @@ frame.onload = async () => {
             d.getElementById('staffLists').textContent.includes('ACD') &&
             d.getElementById('warningList').textContent.includes('uncertain shade'),
         ));
-      test('Rendered instructor headings include tables and students display online markers', () => {
+      test('Table subheaders replace instructor table suffixes and retain online markers', () => {
         const alex = [...d.querySelectorAll('#staffLists section')].find(
-          (section) => section.querySelector('h3').textContent === 'alex (Table 1)',
+          (section) => section.querySelector('h3').textContent === 'alex',
         );
-        assert(alex && alex.textContent.includes('Samara Adams (ONLINE) (A1)'));
+        assert(
+          alex &&
+            alex.querySelector('h4').textContent === 'Table 1' &&
+            alex.textContent.includes('Samara Adams (ONLINE) (A1)'),
+        );
         assert(
           [...alex.querySelectorAll('strong')].some((label) => label.textContent === '(ONLINE)'),
         );
@@ -542,7 +546,7 @@ frame.onload = async () => {
       await w.generate();
       test('AI color-only request updates the correct instructor without a handoff', () => {
         const section = [...d.querySelectorAll('#staffLists section')].find(
-          (section) => section.querySelector('h3').textContent === 'yama (Table 2)',
+          (section) => section.querySelector('h3').textContent === 'yama',
         );
         assert(
           colorCalls === 1 &&
@@ -690,6 +694,65 @@ frame.onload = async () => {
     clickButton(d.getElementById('editToolbar'), 'Undo last edit');
     test('Undo restores a removed student and handoffs', () =>
       assert(findStaff('Jordan').textContent.includes('Veer Shah')));
+    clickButton(findStaff('Alex'), 'Add table');
+    editor = d.querySelector('dialog');
+    editor.querySelector('[name="tablenumber"]').value = '7';
+    editor.querySelector('form').requestSubmit();
+    test('Add table creates a table subheader under the instructor', () => {
+      assert(findStaff('Alex').querySelector('[data-table="7"] h4').textContent === 'Table 7');
+      assert(findStaff('Alex').querySelector('h3').textContent === 'Alex');
+    });
+    const veer = [...findStaff('Alex').querySelectorAll('.editable-student')].find((node) =>
+      node.textContent.includes('Veer Shah'),
+    );
+    clickButton(veer, 'Edit');
+    editor = d.querySelector('dialog');
+    editor.querySelector('[name="table"]').value = '7';
+    editor.querySelector('[name="handoffTable"]').value = '9';
+    editor.querySelector('form').requestSubmit();
+    test('Edit assigns each handoff portion its own table subheader', () => {
+      assert(findStaff('Alex').querySelector('[data-table="7"]').textContent.includes('Veer Shah'));
+      assert(
+        findStaff('Jordan').querySelector('[data-table="9"]').textContent.includes('Veer Shah'),
+      );
+    });
+    d.getElementById('export').click();
+    const tableCsv = await exportedBlob.text();
+    test('CSV exports each edited student table number', () => {
+      const book = XLSX.read(tableCsv, { type: 'string', raw: true });
+      const entries = XLSX.utils
+        .sheet_to_json(book.Sheets[book.SheetNames[0]])
+        .filter((row) => row.Student === 'Veer Shah (ONLINE)');
+      assert(
+        entries.length === 2 &&
+          entries.some((row) => row.Staff === 'Alex' && String(row.Table) === '7') &&
+          entries.some((row) => row.Staff === 'Jordan' && String(row.Table) === '9'),
+      );
+    });
+    const tableDrag = new w.DataTransfer();
+    findStaff('Alex')
+      .querySelector('[data-table="7"] .editable-student')
+      .dispatchEvent(new w.DragEvent('dragstart', { bubbles: true, dataTransfer: tableDrag }));
+    findStaff('Jordan')
+      .querySelector('[data-table="9"]')
+      .dispatchEvent(
+        new w.DragEvent('drop', { bubbles: true, cancelable: true, dataTransfer: tableDrag }),
+      );
+    test('Dropping on a table moves the student to that specific table', () => {
+      assert(!findStaff('Alex').textContent.includes('Veer Shah'));
+      assert(
+        findStaff('Jordan')
+          .querySelector('[data-table="9"]')
+          .textContent.includes('12:00 PM - 1:00 PM: Veer Shah'),
+      );
+    });
+    clickButton(d.getElementById('editToolbar'), 'Undo last edit');
+    clickButton(d.getElementById('editToolbar'), 'Undo last edit');
+    clickButton(d.getElementById('editToolbar'), 'Undo last edit');
+    test('Undo restores student tables and removes a manually added empty table', () => {
+      assert(!findStaff('Alex').querySelector('[data-table="7"]'));
+      assert(findStaff('Alex').querySelector('[data-table=""]').textContent.includes('Veer Shah'));
+    });
     await w.generate();
     test('Regenerating clears manual edits and undo history', () => {
       assert(!d.getElementById('staffLists').textContent.includes('Veer Shah'));
@@ -697,6 +760,67 @@ frame.onload = async () => {
         [...d.getElementById('editToolbar').querySelectorAll('button')].find(
           (button) => button.textContent === 'Undo last edit',
         ).disabled,
+      );
+    });
+    const samara = [...findStaff('Alex').querySelectorAll('.editable-student')].find((node) =>
+      node.textContent.includes('Samara Adams'),
+    );
+    clickButton(samara, 'Edit');
+    editor = d.querySelector('dialog');
+    editor.querySelector('[name="table"]').value = '1';
+    clickButton(editor, 'Add handoff');
+    editor.querySelector('[name="handoffStaff"]').value = 'Alex';
+    editor.querySelector('[name="handoffTable"]').value = '2';
+    editor.querySelector('[name="handoffTime"]').value = '10:30';
+    editor.querySelector('form').requestSubmit();
+    test('A mid-session table switch splits the displayed time and shows the switch note', () => {
+      const first = findStaff('Alex').querySelector('[data-table="1"]');
+      const second = findStaff('Alex').querySelector('[data-table="2"]');
+      assert(
+        first.textContent.includes('10:00 AM - 10:30 AM: Samara Adams (A1) (switch to table 2)'),
+      );
+      assert(second.textContent.includes('10:30 AM - 11:00 AM: Samara Adams (A1)'));
+      assert(first.querySelector('.transfer-time').textContent === '(switch to table 2)');
+    });
+    d.getElementById('export').click();
+    const switchCsv = await exportedBlob.text();
+    test('CSV includes both time portions and the table switch note', () => {
+      assert(switchCsv.includes('(switch to table 2)') && switchCsv.includes('10:30 AM'));
+    });
+    clickButton(findStaff('Alex').querySelector('[data-table="2"]'), 'Edit table');
+    editor = d.querySelector('dialog');
+    test('Edit table pre-fills the current number', () =>
+      assert(editor.querySelector('[name="tablenumber"]').value === '2'));
+    editor.querySelector('[name="tablenumber"]').value = '4';
+    editor.querySelector('form').requestSubmit();
+    test('Renaming a table updates its header, student assignment and switch note', () => {
+      assert(!findStaff('Alex').querySelector('[data-table="2"]'));
+      assert(
+        findStaff('Alex').querySelector('[data-table="4"]').textContent.includes('Samara Adams'),
+      );
+      assert(
+        findStaff('Alex')
+          .querySelector('[data-table="1"]')
+          .textContent.includes('(switch to table 4)'),
+      );
+    });
+    d.getElementById('export').click();
+    const renamedCsv = await exportedBlob.text();
+    test('Renamed table is reflected in CSV', () => {
+      const book = XLSX.read(renamedCsv, { type: 'string', raw: true });
+      const entries = XLSX.utils.sheet_to_json(book.Sheets[book.SheetNames[0]]);
+      assert(entries.some((row) => row.Student === 'Samara Adams' && String(row.Table) === '4'));
+      assert(renamedCsv.includes('(switch to table 4)'));
+    });
+    clickButton(d.getElementById('editToolbar'), 'Undo last edit');
+    test('Undo restores the original table number and switch note', () => {
+      assert(
+        findStaff('Alex').querySelector('[data-table="2"]').textContent.includes('Samara Adams'),
+      );
+      assert(
+        findStaff('Alex')
+          .querySelector('[data-table="1"]')
+          .textContent.includes('(switch to table 2)'),
       );
     });
   } catch (error) {

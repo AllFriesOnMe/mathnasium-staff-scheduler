@@ -614,6 +614,8 @@ test('Contradictory AM transfer time stays visible beside an incorrect-input lab
   assert(rows.length === 1 && rows[0].staff === 'elizabeth');
   assert(rows[0].notes.includes('Transfer to abigail at 7:15 AM (May be incorrect input)'));
   assert(p.unresolvedHandoffs.length === 1);
+  assert(p.warnings.filter((warning) => warning.includes('May be incorrect input')).length === 1);
+  assert(!p.warnings.some((warning) => warning.includes('time is missing or ambiguous')));
 });
 
 // Cross-product tests exercise times that have no corresponding grid row.

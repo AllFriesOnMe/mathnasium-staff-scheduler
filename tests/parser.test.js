@@ -957,3 +957,99 @@ for (const gap of [5, 15, 30, 55, 59, 61, 65, 90, 120]) {
     assert(p.rows.length === 2 && p.rows.every((r) => r.bookedDurationMinutes !== 120));
   });
 }
+
+function changingTableFixture(standalone = false) {
+  const s = sheet([
+    ['Time', 'IC 1', 'IC 2'],
+    ['10:00', 'Samara A', ''],
+    ['10:05', 'alex', ''],
+    ['10:10', 'table 1', ''],
+    ['10:15', '', ''],
+    ['10:30', standalone ? 'table 2' : 'alex', ''],
+    ['10:35', standalone ? '' : 'table 2', ''],
+    ['11:00', 'Ryan C', ''],
+    ['12:00', '', ''],
+  ]);
+  for (let r = 1; r <= 8; r++)
+    for (let c = 1; c <= 2; c++) {
+      const a = XLSX.utils.encode_cell({ r, c });
+      s[a] = { ...(s[a] || { t: 'z' }), s: { patternType: 'solid', fgColor: { rgb: 'FCE5CD' } } };
+    }
+  return s;
+}
+for (const standalone of [false, true])
+  test('Same-color table change follows time, not all-day instructor union: ' + standalone, () => {
+    const p = P.readSchedule(changingTableFixture(standalone), roster);
+    const first = p.rows.filter((r) => r.student === 'Samara Adams');
+    assert(
+      first.length === 2 &&
+        first[0].table === '1' &&
+        first[0].end === '10:30' &&
+        first[1].table === '2' &&
+        first[1].start === '10:30',
+    );
+    assert(
+      first.every((r) => r.staff === 'alex') &&
+        first.reduce((n, r) => n + r.durationMinutes, 0) === 60,
+    );
+    assert(p.rows.find((r) => r.student === 'Ryan Clark').table === '2');
+    assert(first[0].notes.includes('(switch to table 2)'));
+    assert(!p.warnings.some((w) => /conflicting instructor/.test(w)));
+  });
+test('Repeated same table markers do not split student appointments', () => {
+  const s = changingTableFixture();
+  s.B7.v = 'table 1';
+  const p = P.readSchedule(s, roster);
+  assert(p.rows.length === 2 && p.rows.every((r) => r.table === '1' && r.durationMinutes === 60));
+});
+test('Simultaneous contradictory table markers stay unassigned and warn', () => {
+  const s = changingTableFixture();
+  s.C2.v = 'Ryan C';
+  s.C3.v = 'alex';
+  s.C4.v = 'table 3';
+  const p = P.readSchedule(s, roster);
+  assert(p.rows[0].table === '');
+  assert(p.warnings.some((w) => w.includes('Conflicting table numbers')));
+});
+
+for (const minute of [16, 17, 20, 25, 35, 40, 50, 55])
+  test('Mid-session table boundary preserves full appointment at 10:' + minute, () => {
+    const s = changingTableFixture();
+    s.A6.v = testClock(600 + minute);
+    s.A7.v = testClock(601 + minute);
+    const p = P.readSchedule(s, roster),
+      student = p.rows.filter((r) => r.student === 'Samara Adams');
+    assert(
+      student.length === 2 &&
+        student[0].start === '10:00' &&
+        student[0].end === testClock(600 + minute) &&
+        student[1].start === student[0].end &&
+        student[1].end === '11:00',
+    );
+    assert(
+      student[0].notes.includes('(switch to table 2)') &&
+        student[0].table === '1' &&
+        student[1].table === '2',
+    );
+    assert(student.reduce((n, r) => n + r.durationMinutes, 0) === 60);
+  });
+test('A table switch inside a two-hour booking does not restart its session clock', () => {
+  const s = changingTableFixture();
+  s.B8.v = 'Samara Adams';
+  const p = P.readSchedule(s, roster),
+    student = p.rows.filter((r) => r.student === 'Samara Adams');
+  assert(
+    student.length === 2 &&
+      student[0].end === '10:30' &&
+      student[1].start === '10:30' &&
+      student[1].end === '12:00',
+  );
+  assert(student.reduce((n, r) => n + r.durationMinutes, 0) === 120);
+  assert(
+    student.every(
+      (r) =>
+        r.bookedDurationMinutes === 120 &&
+        r.notes.some((n) => n.startsWith('Part of 2-hour appointment')),
+    ),
+  );
+});

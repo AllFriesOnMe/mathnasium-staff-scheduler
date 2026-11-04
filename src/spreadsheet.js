@@ -286,12 +286,7 @@ const SpreadsheetParser = (() => {
       spreadsheetAssessmentFills = new Set(),
       instructorByFill = new Map(),
       tableInstructorFills = new Set(),
-      tablesByTeacher = new Map();
-    function rememberTable(teacher, table) {
-      if (!table) return;
-      if (!tablesByTeacher.has(key(teacher))) tablesByTeacher.set(key(teacher), new Set());
-      tablesByTeacher.get(key(teacher)).add(table);
-    }
+      tableMarkers = [];
     const preferenceFill = (value) =>
       typeof value === 'string' && /^#[0-9a-f]{6}$/i.test(value)
         ? `rgb:${value.slice(1).toUpperCase()}`
@@ -336,9 +331,13 @@ const SpreadsheetParser = (() => {
         const table = text(cell(sheet, r, c)).match(/^table\s*(\d+)$/i);
         if (!table) continue;
         const teacher = text(cell(sheet, r - 1, c));
-        if (!teacher || ignoredNote.test(teacher) || handoffs.noteCells.has(address(r - 1, c)))
+        if (
+          !teacher ||
+          ignoredNote.test(teacher) ||
+          (/^\p{Lu}/u.test(teacher) && matchName(teacher, roster)) ||
+          handoffs.noteCells.has(address(r - 1, c))
+        )
           continue;
-        rememberTable(teacher, table[1]);
         teacherCells.add(address(r - 1, c));
         const color = fill(cell(sheet, r, c));
         if (!color) continue;
@@ -415,7 +414,6 @@ const SpreadsheetParser = (() => {
       assessmentFills.delete(color);
       const table = instructorByFill.get(color)?.table || '';
       instructorByFill.set(color, { teacher: assignment.teacher, table });
-      rememberTable(assignment.teacher, table);
     }
     // Handoff wording names an instructor at a particular time. It must not
     // relabel every earlier booking that happens to share the note's color.
@@ -449,6 +447,47 @@ const SpreadsheetParser = (() => {
       // Require a close match and a clear lead over any other instructor/color.
       if (rival && rival.distance - best.distance < 10) return null;
       return best.assignment;
+    }
+    // Table labels are time-dependent evidence, not a permanent property of a color.
+    for (let r = heading + 1; r <= bounds.e.r; r++) {
+      for (let c = bounds.s.c; c <= bounds.e.c; c++) {
+        const table = text(cell(sheet, r, c)).match(/^table\s*(\d+)$/i);
+        if (!table) continue;
+        const color = fill(cell(sheet, r, c));
+        const teacher = instructorForColor(color)?.teacher;
+        if (!teacher) continue;
+        const hasInstructor = teacherCells.has(address(r - 1, c));
+        let anchor = hasInstructor ? r - 1 : r;
+        // Instructor/table annotations often sit just below a student's name.
+        for (let rr = hasInstructor ? anchor - 1 : heading; rr > heading; rr--) {
+          const value = text(cell(sheet, rr, c));
+          if (!value) continue;
+          if (
+            matchName(studentLabel(value).name, roster) ||
+            (!ignoredNote.test(value) && !ScheduleTakeovers.isNote(value) && /^\p{Lu}/u.test(value))
+          )
+            anchor = rr;
+          break;
+        }
+        const tc = [...timeColumns].sort((a, b) => Math.abs(a - c) - Math.abs(b - c) || a - b)[0];
+        const start = minutes(cell(sheet, anchor, tc)?.v);
+        if (start !== null) tableMarkers.push({ teacher, table: table[1], start, r, c });
+      }
+    }
+    function tableAt(teacher, time) {
+      const markers = tableMarkers
+        .filter((marker) => key(marker.teacher) === key(teacher))
+        .sort((a, b) => a.start - b.start);
+      if (!markers.length) return '';
+      const applicable = markers.filter((marker) => marker.start <= time);
+      const chosen = applicable.length ? applicable.at(-1) : markers[0];
+      const rivals = markers.filter((marker) => marker.start === chosen.start);
+      if (new Set(rivals.map((marker) => marker.table)).size > 1) {
+        const message = `Conflicting table numbers for ${teacher} at ${clock(chosen.start)}; table left unassigned.`;
+        if (!warnings.includes(message)) warnings.push(message);
+        return '';
+      }
+      return chosen.table;
     }
     const unresolvedColors = [],
       colorApplied = [];
@@ -844,11 +883,64 @@ const SpreadsheetParser = (() => {
       aiApplied,
       resolutions: options.handoffResolutions || [],
     });
+    const tableSegments = [];
     for (const row of segments) {
-      const tables = tablesByTeacher.get(key(row.staff));
-      row.table = tables?.size ? [...tables].sort((a, b) => +a - +b).join(', ') : row.table || '';
+      const start = minutes(row.start),
+        end = minutes(row.end);
+      const changes = [
+        ...new Set(
+          tableMarkers
+            .filter(
+              (marker) =>
+                key(marker.teacher) === key(row.staff) &&
+                start < marker.start &&
+                marker.start < end,
+            )
+            .map((marker) => marker.start),
+        ),
+      ].sort((a, b) => a - b);
+      const boundaries = [start, ...changes, end];
+      const portions = [];
+      for (let i = 0; i < boundaries.length - 1; i++) {
+        const table = tableAt(row.staff, boundaries[i]);
+        const previous = portions.at(-1);
+        if (previous?.table === table) {
+          previous.end = clock(boundaries[i + 1]);
+          previous.durationMinutes += boundaries[i + 1] - boundaries[i];
+        } else
+          portions.push({
+            ...row,
+            table,
+            start: clock(boundaries[i]),
+            end: clock(boundaries[i + 1]),
+            durationMinutes: boundaries[i + 1] - boundaries[i],
+            notes: [...(row.notes || [])],
+          });
+      }
+      for (let i = 0; i < portions.length; i++) {
+        if (
+          portions.length > 1 &&
+          row.bookedDurationMinutes === 120 &&
+          !portions[i].notes.some((note) => /^Part of 2-hour appointment /i.test(note))
+        )
+          portions[i].notes.push(
+            `Part of 2-hour appointment ${row.appointmentStart || row.start} - ${row.appointmentEnd || row.end}`,
+          );
+        portions[i].notes = portions[i].notes.filter(
+          (note) =>
+            !(i > 0 && /^Taking over from /i.test(note)) &&
+            !(i < portions.length - 1 && /^Handoff to /i.test(note)),
+        );
+        if (i)
+          portions[i].notes.push(
+            `Continuing from Table ${portions[i - 1].table || 'unassigned'} at ${portions[i].start}`,
+          );
+        if (i < portions.length - 1)
+          portions[i].notes.push(`(switch to table ${portions[i + 1].table || 'unassigned'})`);
+      }
+      tableSegments.push(...portions);
     }
-    return { rows: segments, warnings, unresolvedHandoffs, unresolvedColors, aiApplied };
+    return { rows: tableSegments, warnings, unresolvedHandoffs, unresolvedColors, aiApplied };
   }
   return { key, isHighSchool, readBinders, readSchedule, minutes };
 })();

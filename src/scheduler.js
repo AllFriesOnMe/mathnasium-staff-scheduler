@@ -167,60 +167,72 @@ function renderSchedules(rows) {
     const twoHours = durationOf(row) === 120;
     const slots = groups.get(row.staff),
       time = `${displayTime(row.start)} - ${row.end ? displayTime(row.end) : 'END UNKNOWN'}${twoHours ? ' (2 hours)' : ''}`;
-    const slot = JSON.stringify([time, twoHours ? index : null]);
-    if (!slots.has(slot)) slots.set(slot, { time, students: [] });
+    const slot = JSON.stringify([row.table || '', time, twoHours ? index : null]);
+    if (!slots.has(slot)) slots.set(slot, { time, table: String(row.table || ''), students: [] });
     slots.get(slot).students.push(row);
   });
   $('staffLists').replaceChildren();
   groups.forEach((slots, staff) => {
     const block = document.createElement('section'),
-      h3 = document.createElement('h3'),
-      list = document.createElement('ul');
+      h3 = document.createElement('h3');
     block.className = 'staff-block';
-    list.className = 'staff-list';
-    const tables = [
-      ...new Set(
-        rows
-          .filter((row) => row.staff === staff)
-          .flatMap((row) => String(row.table || '').split(/,\s*/))
-          .filter(Boolean),
-      ),
-    ].sort((a, b) => +a - +b);
-    h3.textContent = staff + (tables.length ? ` (Table ${tables.join(', ')})` : '');
-    slots.forEach(({ students, time }) => {
-      const li = document.createElement('li');
-      li.append(`${time}: `);
-      students.forEach((row, index) => {
-        if (index) li.append(', ');
-        const attention = (note) => /^needs?\s+attention$/i.test(note);
-        const needsAttention = row.notes?.some(attention);
-        const name = document.createElement(needsAttention ? 'strong' : 'span');
-        name.textContent = row.student;
-        if (needsAttention) name.className = 'needs-attention';
-        const notes = (row.notes || []).filter((note) => !attention(note)).map(displayNote);
-        const student = document.createElement('span');
-        student.className = 'editable-student';
-        student.dataset.editId = row._editId;
-        student.append(name);
-        if (row.online) {
-          const online = document.createElement('strong');
-          online.textContent = '(ONLINE)';
-          student.append(' ', online);
-        }
-        student.append(row.binder ? ` (${row.binder})` : '');
-        if (notes.length) {
-          student.append(' [');
-          notes.forEach((note, i) => {
-            if (i) student.append('; ');
-            student.append(ScheduleEditor.note(row, note));
-          });
-          student.append(']');
-        }
-        li.append(student);
+    h3.textContent = staff;
+    block.dataset.staff = staff;
+    block.append(h3);
+    const tables = new Map(ScheduleEditor.tablesFor(staff).map((table) => [table, []]));
+    for (const slot of slots.values()) {
+      if (!tables.has(slot.table)) tables.set(slot.table, []);
+      tables.get(slot.table).push(slot);
+    }
+    for (const [table, entries] of [...tables].sort(([a], [b]) =>
+      a === '' ? 1 : b === '' ? -1 : +a - +b,
+    )) {
+      const group = document.createElement('div');
+      group.className = 'table-group';
+      group.dataset.table = table;
+      const title = document.createElement('h4');
+      title.textContent = table ? 'Table ' + table : 'No table assigned';
+      const list = document.createElement('ul');
+      list.className = 'staff-list';
+      group.append(title, list);
+      block.append(group);
+      entries.forEach(({ students, time }) => {
+        const li = document.createElement('li');
+        li.append(`${time}: `);
+        students.forEach((row, index) => {
+          if (index) li.append(', ');
+          const attention = (note) => /^needs?\s+attention$/i.test(note);
+          const needsAttention = row.notes?.some(attention);
+          const name = document.createElement(needsAttention ? 'strong' : 'span');
+          name.textContent = row.student;
+          if (needsAttention) name.className = 'needs-attention';
+          const notes = (row.notes || []).filter((note) => !attention(note)).map(displayNote);
+          const switchNotes = notes.filter((note) => /^\(switch to table /i.test(note));
+          const otherNotes = notes.filter((note) => !switchNotes.includes(note));
+          const student = document.createElement('span');
+          student.className = 'editable-student';
+          student.dataset.editId = row._editId;
+          student.append(name);
+          if (row.online) {
+            const online = document.createElement('strong');
+            online.textContent = '(ONLINE)';
+            student.append(' ', online);
+          }
+          student.append(row.binder ? ` (${row.binder})` : '');
+          switchNotes.forEach((note) => student.append(' ', ScheduleEditor.note(row, note)));
+          if (otherNotes.length) {
+            student.append(' [');
+            otherNotes.forEach((note, i) => {
+              if (i) student.append('; ');
+              student.append(ScheduleEditor.note(row, note));
+            });
+            student.append(']');
+          }
+          li.append(student);
+        });
+        list.append(li);
       });
-      list.append(li);
-    });
-    block.append(h3, list);
+    }
     $('staffLists').append(block);
   });
 

@@ -199,3 +199,109 @@ test('Excessive additional labels are rejected without changing the schedule', (
   assert.throws(() => model.save({ ...model.draft(id), labels: 'x'.repeat(2001) }, id), /2,000/);
   assert.deepEqual(plain(model.rows), before);
 });
+
+test('A student table can be edited without changing another handoff instructor table', () => {
+  const model = fixture(),
+    id = model.rows[0]._editId;
+  const draft = model.draft(id);
+  assert.equal(draft.table, '1');
+  assert.equal(draft.handoffs[0].table, '2');
+  model.save({ ...draft, table: '7' }, id);
+  const jane = model.rows.filter((r) => r.student === 'Jane Doe');
+  assert.equal(jane[0].table, '7');
+  assert.equal(jane[1].table, '2');
+  assert.ok(model.tables.get('Alex').has('7'));
+  model.undo();
+  assert.equal(model.rows[0].table, '1');
+  assert.equal(model.tables.get('Alex').has('7'), false);
+});
+test('Same instructor table changes preserve booking duration and separate portions', () => {
+  const model = fixture(),
+    id = model.rows[0]._editId;
+  model.save({ ...model.draft(id), handoffs: [{ staff: 'Alex', table: '4', time: '10:20' }] }, id);
+  const jane = model.rows.filter((r) => r.student === 'Jane Doe');
+  assert.equal(jane.length, 2);
+  assert.equal(jane[0].table, '1');
+  assert.equal(jane[1].table, '4');
+  assert.ok(jane[0].notes.includes('(switch to table 4)'));
+  assert.ok(jane[1].notes.includes('Continuing from Table 1 at 10:20'));
+  assert.equal(
+    jane.reduce((n, r) => n + r.durationMinutes, 0),
+    60,
+  );
+  model.save(model.draft(jane[1]._editId), jane[1]._editId);
+  assert.equal(model.rows.filter((r) => r.student === 'Jane Doe').length, 2);
+});
+test('Dragging to a specific table preserves separate tables for the same instructor', () => {
+  const model = fixture();
+  model.move(model.rows[0]._editId, 'Jordan', '5');
+  const jane = model.rows.filter((r) => r.student === 'Jane Doe');
+  assert.equal(jane.length, 2);
+  assert.equal(jane[0].table, '5');
+  assert.equal(jane[1].table, '2');
+  assert.equal(jane[0].staff, 'Jordan');
+  assert.equal(jane[1].staff, 'Jordan');
+});
+test('Add table creates an empty instructor table without changing any student and supports undo', () => {
+  const model = fixture(),
+    before = plain(model.rows);
+  model.addTable('Alex', '8');
+  assert.ok(model.tables.get('Alex').has('8'));
+  assert.deepEqual(plain(model.rows), before);
+  assert.throws(() => model.addTable('Alex', '8'), /already has/);
+  model.undo();
+  assert.equal(model.tables.get('Alex').has('8'), false);
+  assert.deepEqual(plain(model.rows), before);
+});
+
+test('Rename table updates only its instructor, preserves assignments and supports undo', () => {
+  const model = fixture(),
+    before = plain(model.rows);
+  model.renameTable('Alex', '1', '6');
+  assert.equal(model.rows[0].table, '6');
+  assert.equal(model.rows[1].table, '2');
+  assert.ok(model.tables.get('Alex').has('6'));
+  assert.ok(!model.tables.get('Alex').has('1'));
+  model.save({ student: 'New Student', staff: 'Alex', start: '14:00', end: '15:00' });
+  assert.equal(model.rows.find((row) => row.student === 'New Student').table, '6');
+  model.undo();
+  model.undo();
+  assert.deepEqual(plain(model.rows), before);
+  assert.ok(model.tables.get('Alex').has('1'));
+});
+test('Rename table rewrites switch and continuation notes on both portions', () => {
+  const model = fixture(),
+    id = model.rows[0]._editId;
+  model.save({ ...model.draft(id), handoffs: [{ staff: 'Alex', table: '4', time: '10:20' }] }, id);
+  model.renameTable('Alex', '4', '7');
+  let jane = model.rows.filter((row) => row.student === 'Jane Doe');
+  assert.ok(jane[0].notes.includes('(switch to table 7)'));
+  assert.equal(jane[1].table, '7');
+  model.renameTable('Alex', '1', '5');
+  jane = model.rows.filter((row) => row.student === 'Jane Doe');
+  assert.ok(jane[1].notes.includes('Continuing from Table 5 at 10:20'));
+  assert.equal(
+    jane.reduce((n, row) => n + row.durationMinutes, 0),
+    60,
+  );
+});
+test('Duplicate or invalid table renames do not change rows or create undo entries', () => {
+  const model = fixture(),
+    before = plain(model.rows);
+  for (const number of ['0', '-1', '1.5', '1000', ''])
+    assert.throws(() => model.renameTable('Alex', '1', number));
+  assert.deepEqual(plain(model.rows), before);
+  assert.equal(model.canUndo, false);
+  model.addTable('Alex', '8');
+  assert.throws(() => model.renameTable('Alex', '1', '8'), /already has/);
+  model.undo();
+  assert.ok(!model.tables.get('Alex').has('8'));
+});
+for (const table of ['0', '-1', '1.5', '1000', '2, 3', 'abc'])
+  test('Invalid student table is rejected atomically: ' + table, () => {
+    const model = fixture(),
+      before = plain(model.rows),
+      id = model.rows[0]._editId;
+    assert.throws(() => model.save({ ...model.draft(id), table }, id), /Table number/);
+    assert.deepEqual(plain(model.rows), before);
+  });

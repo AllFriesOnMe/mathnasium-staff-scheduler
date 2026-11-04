@@ -5,7 +5,9 @@ const ScheduleEdits = (() => {
   const clock = (value) =>
     `${String(Math.floor(value / 60)).padStart(2, '0')}:${String(value % 60).padStart(2, '0')}`;
   const handoffNote = (value) =>
-    /^(?:Handoff to |Taking over from |Part of 2-hour appointment )/i.test(value);
+    /^(?:Handoff to |Taking over from |Part of 2-hour appointment |Table change to |\(switch to table |Continuing from Table )/i.test(
+      value,
+    );
   const editableLabel = (value) =>
     !handoffNote(value) &&
     !/^Needs attention$/i.test(value) &&
@@ -17,6 +19,7 @@ const ScheduleEdits = (() => {
     let sequence = 0;
     const history = [];
     const staff = new Map();
+    const tables = new Map();
     const bookings = new Map();
     for (const row of rows) {
       row._editId = `student-${++sequence}`;
@@ -29,6 +32,27 @@ const ScheduleEdits = (() => {
       row._bookingId = bookings.get(key);
       if (!staff.has(row.staff)) staff.set(row.staff, row.table || '');
       else if (!staff.get(row.staff) && row.table) staff.set(row.staff, row.table);
+      if (!tables.has(row.staff)) tables.set(row.staff, new Set());
+      if (row.table) tables.get(row.staff).add(String(row.table));
+    }
+    function checkpoint() {
+      history.push({
+        rows: copy(rows),
+        tables: [...tables].map(([name, values]) => [name, [...values]]),
+      });
+      if (history.length > 20) history.shift();
+    }
+    function tableValue(value, teacher) {
+      if (value === undefined)
+        return (
+          (tables.get(teacher).has(staff.get(teacher))
+            ? staff.get(teacher)
+            : [...tables.get(teacher)][0]) || ''
+        );
+      const table = String(value).trim();
+      if (table && !/^[1-9]\d{0,2}$/.test(table))
+        throw new Error('Table number must be a whole number from 1 to 999, or blank.');
+      return table;
     }
     const get = (id) => {
       const row = rows.find((entry) => entry._editId === id);
@@ -54,18 +78,23 @@ const ScheduleEdits = (() => {
       if (!staff.has(draft.staff)) throw new Error('Choose an existing instructor.');
       let previous = start;
       let teacher = draft.staff;
+      let table = tableValue(draft.table, teacher);
       const segments = [];
       for (const transfer of draft.handoffs || []) {
         const time = minutes(transfer.time);
         if (time === null || time <= previous || time >= end)
           throw new Error('Handoff times must be in order, strictly inside the appointment.');
-        if (!staff.has(transfer.staff) || transfer.staff === teacher)
-          throw new Error('Choose a different existing instructor for each handoff.');
-        segments.push({ staff: teacher, start: clock(previous), end: clock(time) });
+        if (!staff.has(transfer.staff))
+          throw new Error('Choose an existing instructor for each handoff.');
+        const nextTable = tableValue(transfer.table, transfer.staff);
+        if (transfer.staff === teacher && nextTable === table)
+          throw new Error('Each handoff must change the instructor or table.');
+        segments.push({ staff: teacher, table, start: clock(previous), end: clock(time) });
         previous = time;
         teacher = transfer.staff;
+        table = nextTable;
       }
-      segments.push({ staff: teacher, start: clock(previous), end: clock(end) });
+      segments.push({ staff: teacher, table, start: clock(previous), end: clock(end) });
       const old = id ? parts(id) : [];
       const template = old[0] || {};
       const booking = template._bookingId || `booking-${++sequence}`;
@@ -112,7 +141,7 @@ const ScheduleEdits = (() => {
         student: binder?.name || name,
         binder: binder?.location || (matchingName ? template.binder || '' : ''),
         online: Boolean(draft.online),
-        table: staff.get(segment.staff),
+        table: segment.table,
         section: segment.staff,
         appointmentStart: clock(start),
         appointmentEnd: clock(end),
@@ -121,9 +150,19 @@ const ScheduleEdits = (() => {
         bookedDurationMinutes: end - start,
         notes: [
           ...notes,
-          ...(index ? [`Taking over from ${segments[index - 1].staff} at ${segment.start}`] : []),
+          ...(index
+            ? [
+                segments[index - 1].staff === segment.staff
+                  ? `Continuing from Table ${segments[index - 1].table || 'unassigned'} at ${segment.start}`
+                  : `Taking over from ${segments[index - 1].staff} at ${segment.start}`,
+              ]
+            : []),
           ...(index < segments.length - 1
-            ? [`Handoff to ${segments[index + 1].staff} at ${segment.end}`]
+            ? [
+                segments[index + 1].staff === segment.staff
+                  ? `(switch to table ${segments[index + 1].table || 'unassigned'})`
+                  : `Handoff to ${segments[index + 1].staff} at ${segment.end}`,
+              ]
             : []),
           ...(segments.length > 1 && end - start === 120
             ? [`Part of 2-hour appointment ${clock(start)} - ${clock(end)}`]
@@ -132,15 +171,17 @@ const ScheduleEdits = (() => {
         _bookingId: booking,
         _editId: `student-${++sequence}`,
       }));
-      history.push(copy(rows));
-      if (history.length > 20) history.shift();
+      checkpoint();
+      for (const segment of result) if (segment.table) tables.get(segment.staff).add(segment.table);
       rows = [...rows.filter((row) => row._bookingId !== booking), ...result];
       return rows;
     }
     function draft(id) {
       const segments = parts(id),
         first = segments[0];
-      const handoffs = segments.slice(1).map((row) => ({ staff: row.staff, time: row.start }));
+      const handoffs = segments
+        .slice(1)
+        .map((row) => ({ staff: row.staff, table: row.table || '', time: row.start }));
       if (!handoffs.length) {
         const unresolved = first.notes
           ?.map((note) =>
@@ -158,6 +199,7 @@ const ScheduleEdits = (() => {
       return {
         student: first.student,
         staff: first.staff,
+        table: first.table || '',
         start: first.start,
         end: segments.at(-1).end,
         online: first.online,
@@ -173,6 +215,58 @@ const ScheduleEdits = (() => {
         return rows;
       },
       staff,
+      tables,
+      addTable(teacher, value) {
+        if (!staff.has(teacher)) throw new Error('Choose an existing instructor.');
+        const table = tableValue(value, teacher);
+        if (!table) throw new Error('Enter a table number.');
+        if (tables.get(teacher).has(table))
+          throw new Error('This instructor already has that table.');
+        checkpoint();
+        tables.get(teacher).add(table);
+      },
+      renameTable(teacher, previous, value) {
+        if (!tables.get(teacher)?.has(previous))
+          throw new Error('This table is no longer available.');
+        const table = tableValue(value, teacher);
+        if (!table) throw new Error('Enter a table number.');
+        if (table === previous) return;
+        if (tables.get(teacher).has(table))
+          throw new Error('This instructor already has that table.');
+        checkpoint();
+        tables.set(
+          teacher,
+          new Set([...tables.get(teacher)].map((number) => (number === previous ? table : number))),
+        );
+        const affected = new Set(
+          rows
+            .filter((row) => row.staff === teacher && row.table === previous)
+            .map((row) => row._bookingId),
+        );
+        rows = rows.map((row) =>
+          row.staff === teacher && row.table === previous ? { ...row, table } : row,
+        );
+        for (const booking of affected) {
+          const segments = rows
+            .filter((row) => row._bookingId === booking)
+            .sort((a, b) => a.start.localeCompare(b.start));
+          for (let index = 0; index < segments.length; index++) {
+            const row = segments[index],
+              before = segments[index - 1],
+              after = segments[index + 1];
+            row.notes = (row.notes || []).filter(
+              (note) =>
+                !/^(?:\(switch to table |Table change to |Continuing from Table )/i.test(note),
+            );
+            if (before?.staff === row.staff && before.table !== row.table)
+              row.notes.push(
+                `Continuing from Table ${before.table || 'unassigned'} at ${row.start}`,
+              );
+            if (after?.staff === row.staff && after.table !== row.table)
+              row.notes.push(`(switch to table ${after.table || 'unassigned'})`);
+          }
+        }
+      },
       roster,
       get,
       parts,
@@ -182,17 +276,21 @@ const ScheduleEdits = (() => {
         return history.length > 0;
       },
       undo() {
-        if (history.length) rows = history.pop();
+        if (history.length) {
+          const snapshot = history.pop();
+          rows = snapshot.rows;
+          tables.clear();
+          for (const [name, values] of snapshot.tables) tables.set(name, new Set(values));
+        }
         return rows;
       },
       remove(id) {
         const booking = get(id)._bookingId;
-        history.push(copy(rows));
-        if (history.length > 20) history.shift();
+        checkpoint();
         rows = rows.filter((row) => row._bookingId !== booking);
         return rows;
       },
-      move(id, target) {
+      move(id, target, targetTable) {
         if (!staff.has(target)) throw new Error('Choose an existing instructor.');
         const selected = get(id),
           segments = parts(id),
@@ -200,14 +298,19 @@ const ScheduleEdits = (() => {
         const changed = segments.map((row) => ({
           ...row,
           staff: row === selected ? target : row.staff,
+          table: row === selected ? tableValue(targetTable, target) : row.table,
         }));
         const merged = [];
         for (const row of changed) {
-          if (merged.at(-1)?.staff === row.staff) merged.at(-1).end = row.end;
+          if (merged.at(-1)?.staff === row.staff && merged.at(-1)?.table === row.table)
+            merged.at(-1).end = row.end;
           else merged.push({ ...row });
         }
         value.staff = merged[0].staff;
-        value.handoffs = merged.slice(1).map((row) => ({ staff: row.staff, time: row.start }));
+        value.table = merged[0].table || '';
+        value.handoffs = merged
+          .slice(1)
+          .map((row) => ({ staff: row.staff, table: row.table || '', time: row.start }));
         return saveDraft(value, id);
       },
     };
@@ -288,6 +391,18 @@ const ScheduleEditor = (() => {
     teacher.name = 'staff';
     staffLabel.append(teacher);
     form.append(staffLabel);
+    const table = input(
+      'Table number',
+      'number',
+      value.table ?? [...model.tables.get(value.staff)][0] ?? '',
+    );
+    table.name = 'table';
+    table.min = '1';
+    table.max = '999';
+    table.step = '1';
+    teacher.addEventListener('change', () => {
+      table.value = [...model.tables.get(teacher.value)][0] || '';
+    });
     const start = input('Start time', 'time', value.start);
     const end = input('End time', 'time', value.end);
     start.addEventListener('change', () => {
@@ -314,7 +429,7 @@ const ScheduleEditor = (() => {
       element('p', 'Separate labels with a semicolon or a new line.', 'color-hint'),
     );
     const transfers = element('fieldset');
-    transfers.append(element('legend', 'Handoffs'));
+    transfers.append(element('legend', 'Handoffs / table changes'));
     const entries = [];
     function addTransfer(transfer = {}) {
       const row = element('div', undefined, 'handoff-fields');
@@ -330,11 +445,24 @@ const ScheduleEditor = (() => {
       time.name = 'handoffTime';
       time.value = transfer.time || '';
       timeLabel.append(time);
-      const entry = { row, select, time };
+      const tableLabel = element('label', 'Table number');
+      const transferTable = element('input');
+      transferTable.type = 'number';
+      transferTable.name = 'handoffTable';
+      transferTable.min = '1';
+      transferTable.max = '999';
+      transferTable.step = '1';
+      transferTable.value = transfer.table ?? [...(model.tables.get(select.value) || [])][0] ?? '';
+      select.addEventListener('change', () => {
+        transferTable.value = [...model.tables.get(select.value)][0] || '';
+      });
+      tableLabel.append(transferTable);
+      const entry = { row, select, time, table: transferTable };
       entries.push(entry);
       row.append(
         label,
         timeLabel,
+        tableLabel,
         button('Remove handoff', () => {
           entries.splice(entries.indexOf(entry), 1);
           row.remove();
@@ -363,13 +491,15 @@ const ScheduleEditor = (() => {
           {
             student: name.value,
             staff: teacher.value,
+            table: table.value,
             start: start.value,
             end: end.value,
             online: online.checked,
             attention: attention.checked,
             labels: labels.value,
-            handoffs: entries.map(({ select, time }) => ({
+            handoffs: entries.map(({ select, time, table }) => ({
               staff: select.value,
+              table: table.value,
               time: time.value,
             })),
           },
@@ -387,6 +517,55 @@ const ScheduleEditor = (() => {
     dialog.addEventListener('close', () => currentDialog.remove(), { once: true });
     dialog.showModal();
     name.focus();
+  }
+  function addTable(staff, previous) {
+    dialog?.remove();
+    const current = element('dialog', undefined, 'schedule-dialog no-print');
+    dialog = current;
+    const form = element('form');
+    form.noValidate = true;
+    const heading = element('h3', `${previous ? 'Edit' : 'Add'} table for ${staff}`);
+    heading.id = 'tableEditorTitle';
+    current.setAttribute('aria-labelledby', heading.id);
+    const label = element('label', 'Table number');
+    const number = element('input');
+    number.type = 'number';
+    number.name = 'tablenumber';
+    number.min = '1';
+    number.max = '999';
+    number.step = '1';
+    number.value = previous || '';
+    label.append(number);
+    const error = element('p', '', 'notice');
+    error.setAttribute('role', 'alert');
+    const save = element('button', previous ? 'Save changes' : 'Add table', 'primary');
+    save.type = 'submit';
+    const actions = element('div', undefined, 'actions');
+    actions.append(
+      save,
+      button('Cancel', () => current.close()),
+    );
+    form.append(heading, label, error, actions);
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      try {
+        if (previous) model.renameTable(staff, previous, number.value);
+        else model.addTable(staff, number.value);
+        current.close();
+        refresh(
+          previous
+            ? `Table ${previous} changed to ${number.value} for ${staff}.`
+            : `Table ${number.value} added for ${staff}.`,
+        );
+      } catch (problem) {
+        error.textContent = problem.message;
+      }
+    });
+    current.append(form);
+    document.body.append(current);
+    current.addEventListener('close', () => current.remove(), { once: true });
+    current.showModal();
+    number.focus();
   }
   function decorate(rows, renderer) {
     render = renderer;
@@ -421,10 +600,14 @@ const ScheduleEditor = (() => {
         )
       ) {
         const block = element('section', undefined, 'staff-block empty-staff');
-        block.append(
-          element('h3', name + (model.staff.get(name) ? ` (Table ${model.staff.get(name)})` : '')),
-          element('ul', undefined, 'staff-list'),
-        );
+        block.append(element('h3', name));
+        block.dataset.staff = name;
+        for (const table of model.tables.get(name)) {
+          const group = element('div', undefined, 'table-group');
+          group.dataset.table = table;
+          group.append(element('h4', `Table ${table}`), element('ul', undefined, 'staff-list'));
+          block.append(group);
+        }
         lists.append(block);
       }
     }
@@ -439,7 +622,18 @@ const ScheduleEditor = (() => {
       header.append(
         heading,
         button('Add student', () => open(staff)),
+        button('Add table', () => addTable(staff)),
       );
+      for (const group of block.querySelectorAll('.table-group')) {
+        if (!group.dataset.table) continue;
+        const title = group.querySelector('h4');
+        const tableHeader = element('div', undefined, 'table-heading');
+        title.before(tableHeader);
+        tableHeader.append(
+          title,
+          button('Edit table', () => addTable(staff, group.dataset.table)),
+        );
+      }
       block.addEventListener('dragover', (event) => {
         if (dragging) {
           event.preventDefault();
@@ -455,9 +649,14 @@ const ScheduleEditor = (() => {
         if (!dragging) return;
         const id = dragging;
         dragging = null;
-        if (model.get(id).staff !== staff) {
+        const group = event.target.closest('.table-group');
+        const table = group && block.contains(group) ? group.dataset.table : undefined;
+        if (
+          model.get(id).staff !== staff ||
+          (table !== undefined && model.get(id).table !== table)
+        ) {
           try {
-            model.move(id, staff);
+            model.move(id, staff, table);
             refresh(`Student moved to ${staff}.`);
           } catch (problem) {
             document.getElementById('editStatus').textContent = problem.message;
@@ -497,6 +696,9 @@ const ScheduleEditor = (() => {
     load(rows, roster) {
       model = ScheduleEdits.create(rows, roster);
     },
+    tablesFor(staff) {
+      return model ? [...(model.tables.get(staff) || [])] : [];
+    },
     clear() {
       model = null;
       dragging = null;
@@ -506,7 +708,11 @@ const ScheduleEditor = (() => {
     },
     decorate,
     note(row, text) {
-      if (!/^(?:Handoff to |Taking over from |Transfer.*\(May be incorrect input\))/i.test(text))
+      if (
+        !/^(?:Handoff to |Taking over from |Table change to |\(switch to table |Continuing from Table |Transfer.*\(May be incorrect input\))/i.test(
+          text,
+        )
+      )
         return document.createTextNode(text);
       const control = button(text, () => open(row.staff, row._editId), 'transfer-time');
       control.title = 'Edit appointment and handoff times';

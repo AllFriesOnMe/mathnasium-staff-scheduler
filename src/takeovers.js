@@ -261,6 +261,7 @@ const ScheduleTakeovers = (() => {
           warnings.push(
             `${address(note.r, note.c)}: ${label}; transfer time is outside the student's appointment.`,
           );
+          note.invalidTimeInput = true;
           return null;
         }
         return explicit;
@@ -483,7 +484,10 @@ const ScheduleTakeovers = (() => {
       return false;
     }
     const timedNotes = notes
-      .map((note) => ({ ...note, time: noteTime(note) }))
+      .map((note) => {
+        const time = noteTime(note);
+        return { ...note, time };
+      })
       .sort(
         (a, b) =>
           (a.time ?? Infinity) - (b.time ?? Infinity) ||
@@ -492,9 +496,10 @@ const ScheduleTakeovers = (() => {
       );
     for (const note of timedNotes) {
       const warning = (reason) => {
-        warnings.push(
-          `${address(note.r, note.c)}: handoff not applied (${reason}): "${note.text}".`,
-        );
+        if (!(note.invalidTimeInput && reason === 'time is missing or ambiguous'))
+          warnings.push(
+            `${address(note.r, note.c)}: handoff not applied (${reason}): "${note.text}".`,
+          );
         if (unresolvedHandoffs.length >= 10) return;
         const nearby = [];
         for (let r = Math.max(heading + 1, note.r - 2); r <= Math.min(bounds.e.r, note.r + 2); r++)
