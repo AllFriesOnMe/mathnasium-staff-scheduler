@@ -204,7 +204,13 @@ function renderSchedules(rows) {
           const attention = (note) => /^needs?\s+attention$/i.test(note);
           const needsAttention = row.notes?.some(attention);
           const name = document.createElement(needsAttention ? 'strong' : 'span');
-          name.textContent = row.student;
+          const nameButton = document.createElement('button');
+          nameButton.type = 'button';
+          nameButton.className = 'student-name';
+          nameButton.textContent = row.student;
+          nameButton.title = 'Why this assignment?';
+          nameButton.addEventListener('click', () => ScheduleEditor.explain(row));
+          name.append(nameButton);
           if (needsAttention) name.className = 'needs-attention';
           const notes = (row.notes || []).filter((note) => !attention(note)).map(displayNote);
           const switchNotes = notes.filter((note) => /^\(switch to table /i.test(note));
@@ -253,6 +259,7 @@ function download() {
       r.table || '',
       r.online ? 'Yes' : '',
     ]),
+    ...ScheduleEditor.staffNoteRows(),
   ];
   const csv =
     '\uFEFF' +

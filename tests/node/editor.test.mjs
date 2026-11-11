@@ -18,6 +18,59 @@ function fixture() {
 }
 const plain = (value) => JSON.parse(JSON.stringify(value));
 
+test('Manual rationale is separate from original import evidence and follows undo', () => {
+  const model = fixture(),
+    row = model.rows[0],
+    id = row._editId;
+  row.rationale = [{ rule: 'Initial instructor', detail: 'Original spreadsheet rule' }];
+  model.save({ ...model.draft(id), table: '7' }, id);
+  const edited = model.rows.find((row) => row.student === 'Jane Doe');
+  assert.ok(
+    edited.manualRationale.some(
+      (item) => item.detail.includes('user') && item.detail.includes('Table 7'),
+    ),
+  );
+  assert.equal(edited.rationale[0].detail, 'Original spreadsheet rule');
+  model.undo();
+  assert.equal(model.rows[0].manualRationale, undefined);
+});
+
+test('Instructor notes can be added, edited, removed and undone independently of students', () => {
+  const model = fixture(),
+    before = plain(model.rows);
+  model.saveStaffNote('Alex', 'Check binders\nReturn calculators');
+  const note = model.staffNotes.get('Alex')[0];
+  assert.deepEqual(plain(model.rows), before);
+  assert.equal(model.staffNotes.has('Jordan'), false);
+  model.saveStaffNote('Alex', 'Updated note', note.id);
+  assert.equal(model.staffNotes.get('Alex')[0].text, 'Updated note');
+  model.removeStaffNote('Alex', note.id);
+  assert.equal(model.staffNotes.get('Alex').length, 0);
+  model.undo();
+  assert.equal(model.staffNotes.get('Alex')[0].text, 'Updated note');
+  model.undo();
+  assert.equal(model.staffNotes.get('Alex')[0].text, 'Check binders\nReturn calculators');
+  model.undo();
+  assert.equal(model.staffNotes.has('Alex'), false);
+});
+test('Student edits preserve instructor notes and include them in undo snapshots', () => {
+  const model = fixture();
+  model.saveStaffNote('Alex', 'Keep this note');
+  model.remove(model.rows[0]._editId);
+  assert.equal(model.staffNotes.get('Alex')[0].text, 'Keep this note');
+  model.undo();
+  assert.equal(model.staffNotes.get('Alex')[0].text, 'Keep this note');
+});
+test('Invalid instructor notes do not create history or change the schedule', () => {
+  const model = fixture();
+  for (const text of ['', '   ', 'x'.repeat(2001)])
+    assert.throws(() => model.saveStaffNote('Alex', text));
+  assert.throws(() => model.saveStaffNote('Unknown', 'A note'));
+  assert.throws(() => model.saveStaffNote('Alex', 'A note', 'missing'));
+  assert.equal(model.staffNotes.size, 0);
+  assert.equal(model.canUndo, false);
+});
+
 test('Moving a handoff boundary updates both sides and preserves flags, binder and total duration', () => {
   const model = fixture(),
     id = model.rows[0]._editId;

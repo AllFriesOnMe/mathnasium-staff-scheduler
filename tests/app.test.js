@@ -823,6 +823,70 @@ frame.onload = async () => {
           .textContent.includes('(switch to table 2)'),
       );
     });
+    clickButton(findStaff('Alex'), 'Add a note');
+    editor = d.querySelector('dialog');
+    editor.querySelector('[name="staffnote"]').value = 'Check binders\nUse <b>paper</b>.';
+    editor.querySelector('form').requestSubmit();
+    test('Instructor notes appear beneath only their own schedule and render as text', () => {
+      const notes = findStaff('Alex').querySelector('.instructor-notes');
+      assert(
+        notes.textContent.includes('Check binders\nUse <b>paper</b>.') && !notes.querySelector('b'),
+      );
+      assert(!findStaff('Jordan').textContent.includes('Check binders'));
+    });
+    clickButton(findStaff('Alex').querySelector('.instructor-notes'), 'Edit note');
+    editor = d.querySelector('dialog');
+    test('Edit note pre-fills the instructor note', () =>
+      assert(
+        editor.querySelector('[name="staffnote"]').value === 'Check binders\nUse <b>paper</b>.',
+      ));
+    editor.querySelector('[name="staffnote"]').value = 'Return calculators';
+    editor.querySelector('form').requestSubmit();
+    d.getElementById('export').click();
+    const notesCsv = await exportedBlob.text();
+    test('CSV exports instructor notes as separate rows without assigning a student', () => {
+      const book = XLSX.read(notesCsv, { type: 'string', raw: true });
+      const entries = XLSX.utils.sheet_to_json(book.Sheets[book.SheetNames[0]]);
+      const note = entries.find((row) => row.Notes === 'Return calculators');
+      assert(note && note.Staff === 'Alex' && !note.Student && !note.Start);
+    });
+    clickButton(findStaff('Alex').querySelector('.instructor-notes'), 'Remove note');
+    test('Instructor notes can be removed', () =>
+      assert(!findStaff('Alex').textContent.includes('Return calculators')));
+    clickButton(d.getElementById('editToolbar'), 'Undo last edit');
+    test('Undo restores instructor notes', () =>
+      assert(findStaff('Alex').textContent.includes('Return calculators')));
+    await w.generate();
+    test('Regeneration clears instructor notes along with other manual edits', () =>
+      assert(!d.getElementById('staffLists').textContent.includes('Return calculators')));
+    findStaff('Alex').querySelector('.student-name').click();
+    editor = d.querySelector('dialog');
+    test('Clicking a student opens recorded assignment evidence with cell references', () => {
+      assert(editor.open && editor.textContent.includes('Why this assignment?'));
+      assert(editor.textContent.includes('B2') && editor.textContent.includes('A2'));
+      assert(
+        editor.textContent.includes('one-hour') && editor.textContent.includes('column heading'),
+      );
+      assert(editor.textContent.includes('No takeover was applied'));
+    });
+    clickButton(editor, 'Close');
+    const currentSamara = [...findStaff('Alex').querySelectorAll('.editable-student')].find(
+      (node) => node.textContent.includes('Samara Adams'),
+    );
+    clickButton(currentSamara, 'Edit');
+    editor = d.querySelector('dialog');
+    editor.querySelector('[name="table"]').value = '6';
+    editor.querySelector('form').requestSubmit();
+    findStaff('Alex').querySelector('.student-name').click();
+    editor = d.querySelector('dialog');
+    test('Manual explanation distinguishes user edits from original spreadsheet evidence', () => {
+      assert(
+        editor.textContent.includes('Manual edit history') &&
+          editor.textContent.includes('Table 6'),
+      );
+      assert(editor.textContent.includes('Original import evidence (before manual edits)'));
+    });
+    clickButton(editor, 'Close');
   } catch (error) {
     failures.push('Browser integration: ' + error.message);
   }

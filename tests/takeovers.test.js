@@ -68,6 +68,49 @@ function assertRayaHandoff(p, time = '19:30', incoming = 'abigail') {
   assert(rows.reduce((total, row) => total + row.durationMinutes, 0) === 60);
 }
 
+test('Color takeover rationale records the two actual boundary cells and time cell', () => {
+  const f = takeoverFixture();
+  for (const time of ['19:15', '19:30', '19:35']) f.put(time, 1, '', 'D5A6BD');
+  const p = takeoverRows(f),
+    rows = p.rows.filter((row) => row.student === 'Raya Holt');
+  assert(rows.length === 2);
+  for (const row of rows) {
+    const evidence = row.rationale.find((item) => item.rule === 'Handoff');
+    assert(
+      evidence &&
+        evidence.detail.includes('B6') &&
+        evidence.detail.includes('B7') &&
+        evidence.detail.includes('A7'),
+    );
+    assert(evidence.detail.includes('Color changed') && evidence.detail.includes('19:15'));
+  }
+});
+test('Written takeover rationale includes split time and instruction cells and names its precedence', () => {
+  const f = takeoverFixture();
+  f.put('18:45', 1, '@ 7:15:00 PM', 'FCE5CD');
+  f.put('19:00', 1, 'transfer to', 'FCE5CD');
+  f.put('19:15', 1, 'abigail', 'FCE5CD');
+  const rows = takeoverRows(f).rows.filter((row) => row.student === 'Raya Holt');
+  assert(rows.length === 2);
+  for (const row of rows) {
+    const item = row.rationale.find((item) => item.rule === 'Handoff');
+    assert(item.detail.includes('B5') && item.detail.includes('B6') && item.detail.includes('B7'));
+    assert(item.detail.includes('written time instead of the note row time'));
+  }
+});
+test('Rejected takeover rationale explains the invalid input without claiming a transfer occurred', () => {
+  const f = takeoverFixture();
+  f.put('18:45', 1, '@ 7:15:00 AM', 'FCE5CD');
+  f.put('19:00', 1, 'transfer to abigail', 'FCE5CD');
+  const row = takeoverRows(f).rows.find((row) => row.student === 'Raya Holt');
+  assert(
+    row.rationale.some(
+      (item) => item.rule === 'Unresolved handoff' && item.detail.includes('outside'),
+    ),
+  );
+  assert(!row.rationale.some((item) => item.rule === 'Handoff'));
+});
+
 test('C21 Jaydon example transfers from Luca to Adrian through the surrounding orange block', () => {
   const times = [
     '09:00',

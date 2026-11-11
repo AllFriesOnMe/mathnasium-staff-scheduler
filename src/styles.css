@@ -168,6 +168,24 @@ details {
 .table-group .staff-list {
   margin-top: 0;
 }
+.instructor-notes {
+  margin: 12px 0 20px;
+}
+.instructor-notes h4 {
+  margin-bottom: 6px;
+}
+.instructor-note p {
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+  margin: 8px 0;
+}
+.instructor-note .actions {
+  margin: 4px 0 12px;
+}
+.instructor-notes button {
+  padding: 4px 8px;
+  font-size: 0.9rem;
+}
 .staff-heading button,
 .student-controls button {
   padding: 2px 7px;
@@ -176,6 +194,25 @@ details {
 .editable-student {
   border-radius: 4px;
   cursor: grab;
+}
+.student-name {
+  font: inherit;
+  font-weight: inherit;
+  color: inherit;
+  border: 0;
+  background: transparent;
+  padding: 0;
+  text-align: left;
+  cursor: help;
+}
+.student-name:hover,
+.student-name:focus-visible {
+  text-decoration: underline dotted;
+}
+.rationale-dialog li {
+  margin: 10px 0;
+  line-height: 1.5;
+  overflow-wrap: anywhere;
 }
 .editable-student:hover,
 .editable-student:focus-within {

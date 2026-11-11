@@ -108,6 +108,7 @@ const ScheduleTakeovers = (() => {
           /^over\s*$/i.test(text(cell(sheet, r + 1, c)));
         if (!isNote(raw) && !splitAction) continue;
         const pieces = [raw];
+        const evidenceCells = [address(r, c)];
         noteCells.add(address(r, c));
         const merge = merges.find((m) => m.s.r === r && m.s.c === c);
         let lastColumn = merge?.e.c ?? c;
@@ -122,6 +123,7 @@ const ScheduleTakeovers = (() => {
           )
             break;
           pieces.push(value);
+          evidenceCells.push(address(r, cc));
           noteCells.add(address(r, cc));
           lastColumn = cc;
         }
@@ -143,6 +145,7 @@ const ScheduleTakeovers = (() => {
           )
             break;
           pieces.push(value);
+          evidenceCells.push(address(rr, c));
           noteCells.add(address(rr, c));
         }
         // A time-only annotation immediately above belongs to this instruction.
@@ -151,9 +154,16 @@ const ScheduleTakeovers = (() => {
         const precedingTime = text(cell(sheet, r - 1, c));
         if (r - 1 > heading && !noteCells.has(above) && timeOnly.test(precedingTime)) {
           pieces.push(precedingTime);
+          evidenceCells.push(above);
           noteCells.add(above);
         }
-        notes.push({ r, c, lastColumn, text: clean(pieces.join(' ')).slice(0, 2000) });
+        notes.push({
+          r,
+          c,
+          lastColumn,
+          cells: evidenceCells,
+          text: clean(pieces.join(' ')).slice(0, 2000),
+        });
       }
     }
     return { notes, noteCells };
@@ -240,6 +250,13 @@ const ScheduleTakeovers = (() => {
               )
             ) {
               base.notes = [...new Set([...base.notes, label])];
+              base.rationale = [
+                ...(base.rationale || []),
+                {
+                  rule: 'Unresolved handoff',
+                  detail: `${address(note.r, note.c)}: "${note.text}". The written time falls outside this student's appointment; no transfer was applied. ${label}.`,
+                },
+              ];
               // A contradictory written time must not silently fall back to a
               // color boundary elsewhere in this same appointment.
               events.set(
@@ -333,7 +350,15 @@ const ScheduleTakeovers = (() => {
       if (prior || adjacent) {
         const base = prior || adjacent;
         base.sources.push(...row.sources);
-        base.namedEvents.push({ time: minutes(row.start), target: row.staff, explicit: false });
+        base.namedEvents.push({
+          time: minutes(row.start),
+          target: row.staff,
+          explicit: false,
+          evidence: {
+            rule: 'Handoff',
+            detail: `Repeated student ${address(base.sources[0].row, base.sources[0].column)} -> ${address(row.sourceRow, row.sourceColumn)}: the new occurrence is assigned to ${row.staff} at ${row.start}. Treated as a continuation of the original appointment, not a new default hour.`,
+          },
+        });
         base.notes = [...new Set([...base.notes, ...row.notes])];
         base.online ||= row.online;
         if (adjacent && !prior) {
@@ -353,6 +378,8 @@ const ScheduleTakeovers = (() => {
     for (const base of bases) {
       for (const source of base.sources) {
         let previous = base.staff;
+        let previousCell = address(source.row, source.column);
+        let previousColor = fill(cell(sheet, source.row, source.column));
         for (const { r, time } of timesFor(source.column)) {
           if (r < source.row || time < minutes(source.teachingStart) || time >= minutes(base.end))
             continue;
@@ -362,10 +389,28 @@ const ScheduleTakeovers = (() => {
           const color = fill(cell(sheet, r, source.column));
           if (!color || assessmentFills.has(color)) continue;
           const assignment = instructorForColor(color, r, source.column);
-          if (!assignment || assignment.teacher === previous) continue;
+          if (!assignment) continue;
+          if (assignment.teacher === previous) {
+            previousCell = address(r, source.column);
+            previousColor = color;
+            continue;
+          }
           if (time > minutes(base.start))
-            events.get(base).push({ time, target: assignment.teacher, explicit: false });
+            events.get(base).push({
+              time,
+              target: assignment.teacher,
+              explicit: false,
+              evidence: {
+                rule: 'Handoff',
+                detail:
+                  color === previousColor
+                    ? `Instructor labels for the shared color ${color} change the assignment from ${previous} at ${previousCell} to ${assignment.teacher} at ${address(r, source.column)}, time ${clock(time)}. This is a label-based change, not a change of fill color.`
+                    : `Color changed from ${previousColor || 'unfilled'} at ${previousCell} (${previous}) to ${color} at ${address(r, source.column)} (${assignment.teacher}). The time label in ${address(r, [...timeColumns].sort((a, b) => Math.abs(a - source.column) - Math.abs(b - source.column) || a - b)[0])} supplies ${clock(time)}. Transfer inferred from that boundary.`,
+              },
+            });
           previous = assignment.teacher;
+          previousCell = address(r, source.column);
+          previousColor = color;
         }
       }
     }
@@ -384,13 +429,26 @@ const ScheduleTakeovers = (() => {
           ...new Set((explicit.length ? explicit : list).map((event) => event.target)),
         ];
         if (targets.length > 1) {
-          if (reportConflicts)
+          if (reportConflicts) {
             warnings.push(
               `Conflicting handoffs for ${base.student} at ${clock(time)}; that handoff was not applied.`,
             );
+            base.rationale = [
+              ...(base.rationale || []),
+              {
+                rule: 'Unresolved handoff',
+                detail: `Conflicting destinations ${targets.join(', ')} at ${clock(time)}; this boundary was not applied.`,
+              },
+            ];
+          }
           continue;
         }
-        accepted.push({ time, target: targets[0] });
+        accepted.push({
+          time,
+          target: targets[0],
+          evidence: (explicit.length ? explicit : list).find((event) => event.target === targets[0])
+            ?.evidence,
+        });
         if (explicit.length) hasExplicit = true;
       }
       return accepted;
@@ -497,6 +555,26 @@ const ScheduleTakeovers = (() => {
       );
     for (const note of timedNotes) {
       const warning = (reason) => {
+        if (!note.invalidTimeInput) {
+          const reference = note.time ?? timesFor(note.c).find((entry) => entry.r === note.r)?.time;
+          for (const base of bases.filter(
+            (base) =>
+              reference !== undefined &&
+              reference !== null &&
+              minutes(base.start) <= reference &&
+              reference < minutes(base.end) &&
+              base.sources.some(
+                (source) => source.column >= note.c && source.column <= note.lastColumn,
+              ),
+          ))
+            base.rationale = [
+              ...(base.rationale || []),
+              {
+                rule: 'Unresolved handoff',
+                detail: `${address(note.r, note.c)}: "${note.text}". No transfer applied: ${reason}.`,
+              },
+            ];
+        }
         if (!(note.invalidTimeInput && reason === 'time is missing or ambiguous'))
           warnings.push(
             `${address(note.r, note.c)}: handoff not applied (${reason}): "${note.text}".`,
@@ -611,6 +689,10 @@ const ScheduleTakeovers = (() => {
             explicit: true,
             namedTarget: Boolean(parsed?.target),
             noteCell: address(note.r, note.c),
+            evidence: {
+              rule: 'AI-assisted handoff',
+              detail: `AI-assisted resolution of "${note.text}" in ${(note.cells || [address(note.r, note.c)]).join(', ')} selected ${target} at ${clock(time)}. The proposed student, instructor and time passed validation against this appointment.`,
+            },
           });
           base.notes.push('AI-assisted handoff');
         }
@@ -695,6 +777,10 @@ const ScheduleTakeovers = (() => {
             explicit: true,
             namedTarget: Boolean(sentence.target),
             noteCell: address(note.r, note.c),
+            evidence: {
+              rule: 'Handoff',
+              detail: `Written instruction in ${(note.cells || [address(note.r, note.c)]).join(', ')}: "${note.text}". Applied transfer from ${staffAt(base, note.time - 0.5)} to ${target} at ${clock(note.time)}${sentence.target ? '; destination named in the instruction' : contextTeacher ? '; destination inferred from surrounding instructor labels' : '; destination confirmed by the paired sending note and nearby instructor color'}${[...note.text.matchAll(timePattern)].length ? '; used the written time instead of the note row time' : '; used the schedule time beside the note'}.`,
+            },
           });
       }
     }
@@ -705,9 +791,11 @@ const ScheduleTakeovers = (() => {
         start = minutes(base.start),
         from = null;
       const parts = [];
+      const appliedEvents = [];
       for (const event of accepted) {
         if (event.target === staff || event.time < start || event.time >= minutes(base.end))
           continue;
+        appliedEvents.push(event);
         if (event.time > start)
           parts.push({ staff, start, end: event.time, from, to: event.target });
         from = staff;
@@ -730,6 +818,13 @@ const ScheduleTakeovers = (() => {
           end: clock(part.end),
           durationMinutes: part.end - part.start,
           notes,
+          rationale: [
+            ...(base.rationale || []),
+            ...appliedEvents
+              .filter((event) => event.time === part.start || event.time === part.end)
+              .map((event) => event.evidence)
+              .filter(Boolean),
+          ],
           appointmentStart: base.start,
           appointmentEnd: base.end,
         });

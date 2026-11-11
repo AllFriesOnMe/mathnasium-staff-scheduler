@@ -20,6 +20,7 @@ const ScheduleEdits = (() => {
     const history = [];
     const staff = new Map();
     const tables = new Map();
+    const staffNotes = new Map();
     const bookings = new Map();
     for (const row of rows) {
       row._editId = `student-${++sequence}`;
@@ -39,6 +40,7 @@ const ScheduleEdits = (() => {
       history.push({
         rows: copy(rows),
         tables: [...tables].map(([name, values]) => [name, [...values]]),
+        staffNotes: copy([...staffNotes]),
       });
       if (history.length > 20) history.shift();
     }
@@ -148,6 +150,13 @@ const ScheduleEdits = (() => {
         sessionStart: clock(start),
         durationMinutes: minutes(segment.end) - minutes(segment.start),
         bookedDurationMinutes: end - start,
+        manualRationale: [
+          ...(template.manualRationale || []),
+          {
+            rule: 'Manual edit',
+            detail: `${draft.manualAction || (old.length ? 'Edited appointment' : 'Added appointment')} by the user. This portion is assigned to ${segment.staff}, ${segment.table ? `Table ${segment.table}` : 'no table assigned'}, ${segment.start} - ${segment.end}. ${index ? `Incoming from ${segments[index - 1].staff} at ${segment.start}. ` : ''}${index < segments.length - 1 ? `Continues with ${segments[index + 1].staff} at ${segment.end}. ` : ''}Binder ${binder?.location || (matchingName ? template.binder || 'not found' : 'not found')}. These values replace automatic assignments for this portion.`,
+          },
+        ],
         notes: [
           ...notes,
           ...(index
@@ -215,6 +224,33 @@ const ScheduleEdits = (() => {
         return rows;
       },
       staff,
+      staffNotes,
+      saveStaffNote(teacher, text, id) {
+        if (!staff.has(teacher)) throw new Error('Choose an existing instructor.');
+        const value = String(text || '').trim();
+        if (!value || value.length > 2000)
+          throw new Error('Enter a note of up to 2,000 characters.');
+        const notes = staffNotes.get(teacher) || [];
+        if (id && !notes.some((note) => note.id === id))
+          throw new Error('This note is no longer available.');
+        checkpoint();
+        staffNotes.set(
+          teacher,
+          id
+            ? notes.map((note) => (note.id === id ? { ...note, text: value } : note))
+            : [...notes, { id: `note-${++sequence}`, text: value }],
+        );
+      },
+      removeStaffNote(teacher, id) {
+        const notes = staffNotes.get(teacher) || [];
+        if (!notes.some((note) => note.id === id))
+          throw new Error('This note is no longer available.');
+        checkpoint();
+        staffNotes.set(
+          teacher,
+          notes.filter((note) => note.id !== id),
+        );
+      },
       tables,
       addTable(teacher, value) {
         if (!staff.has(teacher)) throw new Error('Choose an existing instructor.');
@@ -244,7 +280,19 @@ const ScheduleEdits = (() => {
             .map((row) => row._bookingId),
         );
         rows = rows.map((row) =>
-          row.staff === teacher && row.table === previous ? { ...row, table } : row,
+          row.staff === teacher && row.table === previous
+            ? {
+                ...row,
+                table,
+                manualRationale: [
+                  ...(row.manualRationale || []),
+                  {
+                    rule: 'Manual table change',
+                    detail: `The user renamed Table ${previous} to Table ${table} for ${teacher}. This portion keeps its existing ${row.start} - ${row.end} time.`,
+                  },
+                ],
+              }
+            : row,
         );
         for (const booking of affected) {
           const segments = rows
@@ -281,6 +329,8 @@ const ScheduleEdits = (() => {
           rows = snapshot.rows;
           tables.clear();
           for (const [name, values] of snapshot.tables) tables.set(name, new Set(values));
+          staffNotes.clear();
+          for (const [name, notes] of snapshot.staffNotes) staffNotes.set(name, notes);
         }
         return rows;
       },
@@ -308,6 +358,7 @@ const ScheduleEdits = (() => {
         }
         value.staff = merged[0].staff;
         value.table = merged[0].table || '';
+        value.manualAction = 'Moved by drag and drop';
         value.handoffs = merged
           .slice(1)
           .map((row) => ({ staff: row.staff, table: row.table || '', time: row.start }));
@@ -567,6 +618,105 @@ const ScheduleEditor = (() => {
     current.showModal();
     number.focus();
   }
+  function explain(row) {
+    dialog?.remove();
+    const current = element('dialog', undefined, 'schedule-dialog rationale-dialog no-print');
+    dialog = current;
+    const heading = element('h3', 'Why this assignment?');
+    heading.id = 'assignmentExplanationTitle';
+    current.setAttribute('aria-labelledby', heading.id);
+    const format = (value) => displayTime(value);
+    current.append(
+      heading,
+      element(
+        'p',
+        `${row.student}: ${format(row.start)} - ${format(row.end)} · ${row.staff} · ${row.table ? 'Table ' + row.table : 'No table assigned'}${row.binder ? ' · Binder ' + row.binder : ' · No binder location'}`,
+      ),
+    );
+    function rules(title, items) {
+      current.append(element('h4', title));
+      const list = element('ul');
+      const seen = new Set();
+      for (const item of items) {
+        const key = JSON.stringify(item);
+        if (seen.has(key)) continue;
+        seen.add(key);
+        const entry = element('li');
+        entry.append(
+          element('strong', item.rule + ': '),
+          document.createTextNode(displayNote(item.detail)),
+        );
+        list.append(entry);
+      }
+      current.append(list);
+    }
+    if (row.manualRationale?.length) rules('Manual edit history', row.manualRationale);
+    if (row.rationale?.length)
+      rules(
+        row.manualRationale?.length
+          ? 'Original import evidence (before manual edits)'
+          : 'Rules and spreadsheet evidence',
+        row.rationale,
+      );
+    else
+      current.append(
+        element('p', 'No spreadsheet rule evidence was recorded for this appointment.'),
+      );
+    if (!row.manualRationale?.length && !row.rationale?.some((item) => /handoff/i.test(item.rule)))
+      current.append(element('p', 'No takeover was applied to this appointment portion.'));
+    const actions = element('div', undefined, 'actions');
+    actions.append(
+      button('Edit appointment', () => open(row.staff, row._editId)),
+      button('Close', () => current.close()),
+    );
+    current.append(actions);
+    document.body.append(current);
+    current.addEventListener('close', () => current.remove(), { once: true });
+    current.showModal();
+    actions.lastChild.focus();
+  }
+  function openStaffNote(staff, note) {
+    dialog?.remove();
+    const current = element('dialog', undefined, 'schedule-dialog no-print');
+    dialog = current;
+    const form = element('form');
+    form.noValidate = true;
+    const heading = element('h3', `${note ? 'Edit' : 'Add'} note for ${staff}`);
+    heading.id = 'staffNoteTitle';
+    current.setAttribute('aria-labelledby', heading.id);
+    const label = element('label', 'Note');
+    const text = element('textarea');
+    text.name = 'staffnote';
+    text.rows = 4;
+    text.maxLength = 2000;
+    text.value = note?.text || '';
+    label.append(text);
+    const error = element('p', '', 'notice');
+    error.setAttribute('role', 'alert');
+    const save = element('button', 'Save note', 'primary');
+    save.type = 'submit';
+    const actions = element('div', undefined, 'actions');
+    actions.append(
+      save,
+      button('Cancel', () => current.close()),
+    );
+    form.append(heading, label, error, actions);
+    form.addEventListener('submit', (event) => {
+      event.preventDefault();
+      try {
+        model.saveStaffNote(staff, text.value, note?.id);
+        current.close();
+        refresh(`Note saved for ${staff}.`);
+      } catch (problem) {
+        error.textContent = problem.message;
+      }
+    });
+    current.append(form);
+    document.body.append(current);
+    current.addEventListener('close', () => current.remove(), { once: true });
+    current.showModal();
+    text.focus();
+  }
   function decorate(rows, renderer) {
     render = renderer;
     if (!model) return;
@@ -634,6 +784,27 @@ const ScheduleEditor = (() => {
           button('Edit table', () => addTable(staff, group.dataset.table)),
         );
       }
+      const notes = model.staffNotes.get(staff) || [];
+      const noteArea = element('div', undefined, 'instructor-notes');
+      if (notes.length) {
+        block.classList.remove('empty-staff');
+        noteArea.append(element('h4', 'Notes'));
+        for (const note of notes) {
+          const entry = element('div', undefined, 'instructor-note');
+          const controls = element('div', undefined, 'actions no-print');
+          controls.append(
+            button('Edit note', () => openStaffNote(staff, note)),
+            button('Remove note', () => {
+              model.removeStaffNote(staff, note.id);
+              refresh(`Note removed from ${staff}'s schedule.`);
+            }),
+          );
+          entry.append(element('p', note.text), controls);
+          noteArea.append(entry);
+        }
+      }
+      noteArea.append(button('Add a note', () => openStaffNote(staff)));
+      block.append(noteArea);
       block.addEventListener('dragover', (event) => {
         if (dragging) {
           event.preventDefault();
@@ -693,11 +864,19 @@ const ScheduleEditor = (() => {
     }
   }
   return {
+    explain,
     load(rows, roster) {
       model = ScheduleEdits.create(rows, roster);
     },
     tablesFor(staff) {
       return model ? [...(model.tables.get(staff) || [])] : [];
+    },
+    staffNoteRows() {
+      return model
+        ? [...model.staffNotes].flatMap(([staff, notes]) =>
+            notes.map((note) => [staff, '', '', '', '', note.text, '', '', '']),
+          )
+        : [];
     },
     clear() {
       model = null;

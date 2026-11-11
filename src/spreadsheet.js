@@ -251,6 +251,20 @@ const SpreadsheetParser = (() => {
           warnings.push(`${rawStudent} matched uniquely to ${match.entry.name}.`);
         rows.push({
           staff: String(staff).trim(),
+          rationale: [
+            {
+              rule: 'Time',
+              detail: `Explicit start ${clock(start)} in ${address(r, h.start)} and end ${clock(end)} in ${address(r, h.end)}; no default duration was used.`,
+            },
+            {
+              rule: 'Instructor',
+              detail: `Read ${String(staff).trim()} directly from ${address(r, h.staff)} in the Staff column.`,
+            },
+            {
+              rule: 'Student',
+              detail: `${address(r, h.student)}: ${rawStudent}${match?.abbreviated ? ` matched uniquely to ${match.entry.name}` : match ? ' matched the binder roster' : '; no binder roster match'}.`,
+            },
+          ],
           student: match?.entry.name || studentName,
           online: isOnline(rawStudent) || isOnline(staff),
           notes: label.notes,
@@ -343,7 +357,7 @@ const SpreadsheetParser = (() => {
         const color = fill(cell(sheet, r, c));
         if (!color) continue;
         const assignment = { teacher, table: table[1] };
-        instructorAnchors.push({ ...assignment, color, r: r - 1, c });
+        instructorAnchors.push({ ...assignment, color, r: r - 1, labelRow: r - 1, c });
         tableInstructorFills.add(color);
         if (
           instructorByFill.has(color) &&
@@ -374,7 +388,7 @@ const SpreadsheetParser = (() => {
         // Names explicitly above table labels outrank incidental lowercase text.
         // Conflicting table labels still remain ambiguous from the first pass.
         if (tableInstructorFills.has(color)) continue;
-        instructorAnchors.push({ teacher: name, table: '', color, r, c });
+        instructorAnchors.push({ teacher: name, table: '', color, r, labelRow: r, c });
         if (!instructorByFill.has(color)) instructorByFill.set(color, { teacher: name, table: '' });
         else if (key(instructorByFill.get(color)?.teacher) !== key(name))
           instructorByFill.set(color, null);
@@ -830,6 +844,46 @@ const SpreadsheetParser = (() => {
         students.forEach((student) =>
           rows.push({
             staff: instructor,
+            rationale: [
+              {
+                rule: 'Time',
+                detail: `Student ${address(entry.r, c)} uses start time ${clock(start)} from ${address(entry.r, tc)}.`,
+              },
+              {
+                rule: 'Student',
+                detail: `${address(entry.r, c)} contains "${text(cell(sheet, entry.r, c))}"; imported as ${student}${roster.has(key(student)) ? ' using the binder roster' : ' without a binder roster match'}.`,
+              },
+              {
+                rule: 'Initial instructor',
+                detail: aiColor
+                  ? `AI-assisted color assignment: ${address(teachingRow, c)} (${color}) was assigned to ${instructor} using the validated color-check result.`
+                  : manualAssignments.get(color)?.behavior === 'instructor' ||
+                      (directorFill && color === directorFill)
+                    ? `Manual color indicator for ${color} assigns ${address(teachingRow, c)} to ${instructor}; it overrides spreadsheet labels.`
+                    : assignment
+                      ? `${address(teachingRow, c)} has color ${color}. ${instructorByFill.get(color) ? 'Color matched' : instructorByFill.has(color) ? 'Shared color resolved from nearby instructor labels for' : 'Approximate color match to'} ${instructor}. Instructor label cells: ${
+                          instructorAnchors
+                            .filter(
+                              (anchor) =>
+                                key(anchor.teacher) === key(instructor) &&
+                                colorDistance(anchor.color, color) <= 26,
+                            )
+                            .map((anchor) => address(anchor.labelRow, anchor.c))
+                            .join(', ') || 'no spreadsheet label; configured indicator'
+                        }.`
+                      : color
+                        ? `No unambiguous instructor match for ${address(teachingRow, c)} (${color}); used fallback ${instructor}. This is not a confirmed instructor assignment.`
+                        : `No cell color; used the column heading "${staff}" at ${address(heading, c)}.`,
+              },
+              ...(teachingStart > start
+                ? [
+                    {
+                      rule: 'Assessment',
+                      detail: `Assessment starts at ${clock(start)}; teaching begins at ${clock(teachingStart)} in ${address(teachingRow, c)}. The full appointment start is retained.`,
+                    },
+                  ]
+                : []),
+            ],
             table: assignment?.table || '',
             section: staff,
             student,
@@ -906,6 +960,16 @@ const SpreadsheetParser = (() => {
           notes,
           durationMinutes,
           bookedDurationMinutes,
+          rationale: [
+            ...(row.rationale || []),
+            ...(twoHours ? (next.rationale || []).filter((item) => item.rule === 'Student') : []),
+            {
+              rule: 'Duration',
+              detail: twoHours
+                ? `The same student appears in ${address(row.sourceRow, row.sourceColumn)} at ${row.sessionStart} and ${address(next.sourceRow, next.sourceColumn)} at ${next.sessionStart}, exactly one hour apart. Combined into a two-hour appointment ending ${clock(sessionEnd)}.`
+                : `Used the default one-hour session starting ${row.sessionStart} and ending ${clock(sessionEnd)}; no matching appearance exactly one hour later was paired.`,
+            },
+          ],
           sources: twoHours ? [...row.sources, ...next.sources] : row.sources,
           end: clock(sessionEnd),
         });
@@ -974,6 +1038,41 @@ const SpreadsheetParser = (() => {
           });
       }
       for (let i = 0; i < portions.length; i++) {
+        const marker =
+          tableMarkers
+            .filter(
+              (marker) =>
+                key(marker.teacher) === key(row.staff) &&
+                marker.table === portions[i].table &&
+                marker.start <= minutes(portions[i].start),
+            )
+            .sort((a, b) => b.start - a.start)[0] ||
+          tableMarkers.find(
+            (marker) =>
+              key(marker.teacher) === key(row.staff) && marker.table === portions[i].table,
+          );
+        portions[i].rationale = [
+          ...(row.rationale || []),
+          {
+            rule: 'Table',
+            detail: portions[i].table
+              ? `Table ${portions[i].table} is assigned for ${portions[i].start} - ${portions[i].end}${marker ? ` from the table label in ${address(marker.r, marker.c)}, effective ${clock(marker.start)}` : ''}.`
+              : 'No unambiguous table number was identified for this portion.',
+          },
+          ...(portions.length > 1
+            ? [
+                {
+                  rule: 'Table change',
+                  detail: `This appointment was split at ${portions
+                    .slice(1)
+                    .map((part) => part.start)
+                    .join(
+                      ', ',
+                    )} because the instructor changes tables. The original appointment end ${row.appointmentEnd || row.end} is preserved.`,
+                },
+              ]
+            : []),
+        ];
         if (
           portions.length > 1 &&
           row.bookedDurationMinutes === 120 &&

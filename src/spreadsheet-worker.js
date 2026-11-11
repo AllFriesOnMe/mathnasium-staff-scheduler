@@ -61,6 +61,15 @@ self.onmessage = async (event) => {
         byStudent = new Map();
       result.rows.forEach((row) => {
         row.binder = roster.get(SpreadsheetParser.key(row.student))?.location || '';
+        row.rationale = [
+          ...(row.rationale || []),
+          {
+            rule: 'Binder',
+            detail: row.binder
+              ? `${row.student} matched the binder roster; binder location ${row.binder}.`
+              : `No binder roster match for ${row.student}; no binder location is displayed.`,
+          },
+        ];
         if (!row.binder && !row.online && !SpreadsheetParser.isHighSchool(row.section || row.staff))
           result.warnings.push(`No binder location for ${row.student}.`);
         const id = JSON.stringify([row.staff, row.start, row.end, row.student]);

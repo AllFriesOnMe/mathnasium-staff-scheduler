@@ -1007,6 +1007,49 @@ test('Repeated same table markers do not split student appointments', () => {
   const p = P.readSchedule(s, roster);
   assert(p.rows.length === 2 && p.rows.every((r) => r.table === '1' && r.durationMinutes === 60));
 });
+
+test('Explanation records table-label cells on each side of a table change', () => {
+  const rows = P.readSchedule(changingTableFixture(), roster).rows.filter(
+    (row) => row.student === 'Samara Adams',
+  );
+  assert(rows[0].rationale.some((item) => item.rule === 'Table' && item.detail.includes('B4')));
+  assert(rows[1].rationale.some((item) => item.rule === 'Table' && item.detail.includes('B7')));
+  assert(rows.every((row) => row.rationale.some((item) => item.rule === 'Table change')));
+});
+test('Colorless explanation cites the header, not a nonexistent manual override', () => {
+  const row = P.readSchedule(
+    sheet([
+      ['Time', 'Alex'],
+      ['10:00', 'Samara A'],
+    ]),
+    roster,
+  ).rows[0];
+  const item = row.rationale.find((item) => item.rule === 'Initial instructor');
+  assert(
+    item.detail.includes('B1') &&
+      item.detail.includes('column heading') &&
+      !item.detail.includes('Manual'),
+  );
+  assert(
+    row.rationale.some(
+      (item) => item.rule === 'Duration' && item.detail.includes('default one-hour'),
+    ),
+  );
+});
+test('Unmatched color explanation identifies a fallback rather than a confirmed instructor', () => {
+  const s = sheet([
+    ['Time', 'IC1'],
+    ['10:00', 'Samara A'],
+  ]);
+  s.B2.s = { patternType: 'solid', fgColor: { rgb: '112233' } };
+  const row = P.readSchedule(s, roster).rows[0];
+  assert(
+    row.rationale.some(
+      (item) =>
+        item.rule === 'Initial instructor' && item.detail.includes('not a confirmed instructor'),
+    ),
+  );
+});
 test('Simultaneous contradictory table markers stay unassigned and warn', () => {
   const s = changingTableFixture();
   s.C2.v = 'Ryan C';
